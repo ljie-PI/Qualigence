@@ -1144,6 +1144,7 @@ async function writeReleaseFixture(
           dpiScale: "100%",
           systemLanguage: "en-US",
           testAccount: "qualigence-acceptance",
+          accountPrivilege: "standard-user",
           interactiveSessionTypes: ["local", "rdp"],
           runnerCertificateFingerprint: "a".repeat(64),
           companionPipe: "\\\\.\\pipe\\qualigence-companion",
@@ -3148,6 +3149,21 @@ describe("finalizeGraphFreezeFromEvidence", () => {
         mutableRecord(states[0], "benchmark scenario state")[
           "observationGraphSha256"
         ] = "f".repeat(64);
+      },
+    },
+    {
+      name: "benchmark invocation without usage values",
+      key: "benchmark",
+      filename: "benchmark.json",
+      code: "EvidenceMalformed",
+      mutate: (evidence: Record<string, unknown>) => {
+        const invocations = evidence["invocations"];
+        if (!Array.isArray(invocations) || invocations[0] === undefined) {
+          throw new Error("benchmark fixture has no invocation");
+        }
+        delete mutableRecord(invocations[0], "benchmark invocation")[
+          "totalTokens"
+        ];
       },
     },
     {

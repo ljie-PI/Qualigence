@@ -390,37 +390,55 @@
       "invocationId": "benchmark-invocation-1",
       "attemptId": "71a40be56a64cc4cd7c40d85503c410a01bd1cf5f30c141825303e9a88d07be0:629a409ae56d3ca7241c7a16b3eb986200ac315fbeb4c815faffc0630444f7b4",
       "status": "succeeded",
-      "usageStatus": "known"
+      "usageStatus": "known",
+      "inputTokens": 1000,
+      "outputTokens": 100,
+      "totalTokens": 1100
     },
     {
       "invocationId": "benchmark-invocation-2",
       "attemptId": "71a40be56a64cc4cd7c40d85503c410a01bd1cf5f30c141825303e9a88d07be0:15f9ced1e27488e44c6e336a872881c37b32151eb224c6c2281e1cac58ddd428",
       "status": "succeeded",
-      "usageStatus": "known"
+      "usageStatus": "known",
+      "inputTokens": 1000,
+      "outputTokens": 100,
+      "totalTokens": 1100
     },
     {
       "invocationId": "benchmark-invocation-3",
       "attemptId": "71a40be56a64cc4cd7c40d85503c410a01bd1cf5f30c141825303e9a88d07be0:c033451a1ac3f54dc3012d670a2e15a3149190ed9c1b26e9191f321b53bfaae0",
       "status": "succeeded",
-      "usageStatus": "known"
+      "usageStatus": "known",
+      "inputTokens": 1000,
+      "outputTokens": 100,
+      "totalTokens": 1100
     },
     {
       "invocationId": "benchmark-invocation-4",
       "attemptId": "71a40be56a64cc4cd7c40d85503c410a01bd1cf5f30c141825303e9a88d07be0:639af55e0c42233fabc0e6959b39e7d9e5e6e5b1116d51337d231be2d884921f",
       "status": "succeeded",
-      "usageStatus": "known"
+      "usageStatus": "known",
+      "inputTokens": 1000,
+      "outputTokens": 100,
+      "totalTokens": 1100
     },
     {
       "invocationId": "benchmark-invocation-5",
       "attemptId": "71a40be56a64cc4cd7c40d85503c410a01bd1cf5f30c141825303e9a88d07be0:26881c0e9a7afaf30bf83dfd0aeed2ad616c4434b3505e447d8b895ceba4de65",
       "status": "succeeded",
-      "usageStatus": "known"
+      "usageStatus": "known",
+      "inputTokens": 1000,
+      "outputTokens": 100,
+      "totalTokens": 1100
     },
     {
       "invocationId": "benchmark-invocation-6",
       "attemptId": "71a40be56a64cc4cd7c40d85503c410a01bd1cf5f30c141825303e9a88d07be0:92e453cb788938dab3016881765bebc828f6440ea0f281d319442de07338235f",
       "status": "succeeded",
-      "usageStatus": "known"
+      "usageStatus": "known",
+      "inputTokens": 1000,
+      "outputTokens": 100,
+      "totalTokens": 1100
     }
   ]
 }

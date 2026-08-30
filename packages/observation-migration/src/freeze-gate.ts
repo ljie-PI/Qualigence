@@ -1311,6 +1311,7 @@ const REQUIRED_WINDOWS_ACCEPTANCE_METADATA_FIELDS = [
   "dpiScale",
   "systemLanguage",
   "testAccount",
+  "accountPrivilege",
   "runnerCertificateFingerprint",
   "companionPipe",
   "logonSid",
@@ -3556,21 +3557,45 @@ async function validateBenchmarkEvidence(
     const invocation = asRecord(value, label);
     assertKeys(
       invocation,
-      ["invocationId", "attemptId", "status", "usageStatus"],
+      [
+        "invocationId",
+        "attemptId",
+        "status",
+        "usageStatus",
+        "inputTokens",
+        "outputTokens",
+        "totalTokens",
+      ],
       label,
     );
     const invocationId = requireString(invocation, "invocationId", label);
     const invocationAttemptId = requireString(invocation, "attemptId", label);
+    const inputTokens = requirePositiveInteger(
+      invocation,
+      "inputTokens",
+      label,
+    );
+    const outputTokens = requirePositiveInteger(
+      invocation,
+      "outputTokens",
+      label,
+    );
+    const totalTokens = requirePositiveInteger(
+      invocation,
+      "totalTokens",
+      label,
+    );
     if (
       invocationIds.has(invocationId) ||
       invocation["status"] !== "succeeded" ||
-      invocation["usageStatus"] !== "known"
+      invocation["usageStatus"] !== "known" ||
+      totalTokens !== inputTokens + outputTokens
     ) {
       throw new EvidenceValidationError(
         invocationIds.has(invocationId)
           ? "EvidenceDuplicate"
           : "BenchmarkInvocationInvalid",
-        `${label} must be unique, successful, and carry known usage`,
+        `${label} must be unique, successful, and carry internally consistent known usage`,
       );
     }
     invocationIds.add(invocationId);
