@@ -550,12 +550,22 @@ function closurePullRequest(legacyTicket: number) {
     checkSuite: {
       status: "completed",
       conclusion: "success",
-      checkCount: 1,
-      requiredChecks: ["focused-gate"],
+      checkCount: 3,
+      requiredChecks: ["gate-linux", "browser-e2e", "release-metadata"],
     },
     checks: [
       {
-        name: "focused-gate",
+        name: "gate-linux",
+        conclusion: "success",
+        commit: head,
+      },
+      {
+        name: "browser-e2e",
+        conclusion: "success",
+        commit: head,
+      },
+      {
+        name: "release-metadata",
         conclusion: "success",
         commit: head,
       },
@@ -581,12 +591,22 @@ function ticket34RemediationPullRequest() {
     checkSuite: {
       status: "completed",
       conclusion: "success",
-      checkCount: 1,
-      requiredChecks: ["focused-gate"],
+      checkCount: 3,
+      requiredChecks: ["gate-linux", "browser-e2e", "release-metadata"],
     },
     checks: [
       {
-        name: "focused-gate",
+        name: "gate-linux",
+        conclusion: "success",
+        commit: FINALIZER_COMMIT,
+      },
+      {
+        name: "browser-e2e",
+        conclusion: "success",
+        commit: FINALIZER_COMMIT,
+      },
+      {
+        name: "release-metadata",
         conclusion: "success",
         commit: FINALIZER_COMMIT,
       },
@@ -2092,10 +2112,13 @@ describe("finalizeGraphFreezeFromEvidence", () => {
     pullRequest["mergeCommit"] = selectedCommit;
     pullRequest["postReviewFiles"] = [decisionPath];
     const checks = pullRequest["checks"];
-    if (!Array.isArray(checks) || checks[0] === undefined) {
+    if (!Array.isArray(checks) || checks.length === 0) {
       throw new Error("Ticket 35 fixture has no check");
     }
-    mutableRecord(checks[0], "Ticket 35 check")["commit"] = selectedCommit;
+    for (const [index, check] of checks.entries()) {
+      mutableRecord(check, `Ticket 35 check ${index}`)["commit"] =
+        selectedCommit;
+    }
     const reference = await writeEvidenceObject(
       repositoryRoot,
       version,
@@ -3324,6 +3347,7 @@ describe("finalizeGraphFreezeFromEvidence", () => {
     ["substituted Windows checklist item", "WindowsEvidenceItemInvalid"],
     ["cross-section Windows checklist ids", "WindowsEvidenceItemInvalid"],
     ["missing Windows acceptance metadata", "WindowsEvidenceEnvironmentInvalid"],
+    ["contradictory Windows build metadata", "WindowsEvidenceEnvironmentInvalid"],
     ["duplicate Windows signer", "WindowsEvidenceSignerInvalid"],
     ["incompatible Runner protocol", "WindowsEvidenceProtocolInvalid"],
     ["cross-commit CI artifact", "GateArtifactCommitMismatch"],
@@ -3358,6 +3382,7 @@ describe("finalizeGraphFreezeFromEvidence", () => {
       scenario === "substituted Windows checklist item" ||
       scenario === "cross-section Windows checklist ids" ||
       scenario === "missing Windows acceptance metadata" ||
+      scenario === "contradictory Windows build metadata" ||
       scenario === "duplicate Windows signer" ||
       scenario === "incompatible Runner protocol"
     ) {
@@ -3387,6 +3412,11 @@ describe("finalizeGraphFreezeFromEvidence", () => {
         checklist["runnerProtocolVersion"] = "runner-protocol/v2";
       } else if (scenario === "missing Windows acceptance metadata") {
         delete checklist["acceptanceEnvironment"];
+      } else if (scenario === "contradictory Windows build metadata") {
+        mutableRecord(
+          checklist["acceptanceEnvironment"],
+          "Windows acceptance metadata",
+        )["windowsBuild"] = "Windows 11 22H2 22621";
       } else {
         const items = checklist["items"];
         if (!Array.isArray(items) || items[0] === undefined) {

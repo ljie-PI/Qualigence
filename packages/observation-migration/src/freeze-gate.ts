@@ -1298,7 +1298,11 @@ const REQUIRED_TICKET_34_REMEDIATION_REMOTE_HEAD =
   "1e3be71ec89391f34654c48e69e3fb233c4e6252";
 const REQUIRED_TICKET_34_REMEDIATION_REVIEWED_TREE =
   "6891de1111f98dc59ec63822fc7728643f4abb30";
-const REQUIRED_PULL_REQUEST_CHECK_NAMES = ["focused-gate"] as const;
+const REQUIRED_PULL_REQUEST_CHECK_NAMES = [
+  "gate-linux",
+  "browser-e2e",
+  "release-metadata",
+] as const;
 const REQUIRED_WINDOWS_ACCEPTANCE_METADATA_FIELDS = [
   "runnerVersion",
   "companionVersion",
@@ -4020,6 +4024,12 @@ function validateCompleteWindowsChecklist(
     throw new EvidenceValidationError(
       "WindowsEvidenceEnvironmentInvalid",
       "Windows checklist acceptance metadata must prove local and RDP sessions",
+    );
+  }
+  if (acceptanceEnvironment["windowsBuild"] !== checklist["windowsBuild"]) {
+    throw new EvidenceValidationError(
+      "WindowsEvidenceEnvironmentInvalid",
+      "Windows checklist acceptance metadata contradicts the signed Windows build",
     );
   }
   const securityVetoIds = assertStringArray(
