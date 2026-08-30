@@ -66,17 +66,36 @@ describe("release image packaging", () => {
     expect(workflow).toContain("cancel-in-progress: false");
     expect(workflow).toContain("actions/artifacts?name=release-${RELEASE_VERSION}");
     expect(workflow).toContain("test \"$existing_release_artifacts\" = 0");
+    expect(workflow).toContain('[[ "$RELEASE_VERSION" =~ ^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9_-])?$ ]]');
     expect(workflow).toContain("if: success()");
     expect(workflow).toContain("name: release-${{ inputs.version }}");
     expect(workflow).toContain("artifacts/release/${{ inputs.version }}/release-manifest.json");
     expect(workflow).toContain("artifacts/release/${{ inputs.version }}/sbom.spdx.json");
-    expect(workflow).toContain("if: failure()");
+    expect(workflow).toContain("if: failure() || cancelled()");
     expect(workflow).toContain("name: release-diagnostics-${{ inputs.version }}-${{ github.run_id }}");
+    expect(workflow).toContain("!artifacts/release/${{ inputs.version }}/release-manifest.json");
     expect(workflow).toContain("--render-compose release-work/compose.release.rendered.yaml");
     expect(workflow).toContain("signatureFromEvidence(windowsSignatures");
     expect(workflow).toContain("signatures: manifestWindowsSignatures");
     expect(workflow).not.toContain("signedAt: new Date().toISOString()");
     expect(workflow).not.toContain("artifacts/release/${{ inputs.version }}/compose.release.rendered.yaml");
+  });
+
+  it("materializes verified Gate archives before the manifest and uploads their exact bytes", async () => {
+    const workflow = await readFile(releaseWorkflow, "utf8");
+    const materializeStep = workflow.indexOf("name: Materialize verified Gate archives");
+    const manifestStep = workflow.indexOf("name: Generate and verify release manifest");
+    const successUpload = workflow.indexOf("name: release-${{ inputs.version }}");
+    expect(materializeStep).toBeGreaterThan(0);
+    expect(manifestStep).toBeGreaterThan(materializeStep);
+    expect(successUpload).toBeGreaterThan(manifestStep);
+    expect(workflow).toContain('mkdir -p "$release_dir/gates"');
+    expect(workflow).toContain('destination="$release_dir/gates/${gate}.zip"');
+    expect(workflow).toContain('test ! -e "$destination"');
+    expect(workflow).toContain('test "$(sha256sum "$source" | awk \'{print $1}\')" = "$(sha256sum "$destination" | awk \'{print $1}\')"');
+    expect(workflow).toContain("const artifactPath = `artifacts/release/${version}/gates/${delivery.gate}.zip`");
+    expect(workflow).toContain("artifactPath,");
+    expect(workflow).toContain("artifacts/release/${{ inputs.version }}/gates/");
   });
 
   it("uses a digest-only release Compose overlay and removes build contexts", async () => {

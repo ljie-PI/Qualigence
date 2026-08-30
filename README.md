@@ -118,9 +118,12 @@ GH_TOKEN="$(gh auth token)" GITHUB_REPOSITORY=ljie-PI/Qualigence \
     --render-compose artifacts/release/<version>/compose.release.rendered.yaml
 ```
 
-If the manifest carries repository-relative `artifactPath` values for local Gate
-archives, `GH_TOKEN` is not required; otherwise the verifier downloads each
-named artifact by immutable artifact ID and recomputes its SHA-256.
+Every Gate record carries a repository-relative `artifactPath` under
+`artifacts/release/<version>/gates/`. The release workflow materializes those
+exact ZIP bytes before writing the manifest and uploads them in the same
+immutable release artifact. The verifier never downloads Gate archives; it
+path-confines the materialized files and recomputes their SHA-256 locally.
+`GH_TOKEN` may still be required for GitHub attestation verification.
 
 The release verifier rejects mutable tags, non-`sha256:` image references,
 wrong repository/commit, duplicate or missing Gate names, cross-commit Gate
