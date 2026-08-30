@@ -279,12 +279,20 @@ function isValidIsoTimestamp(value: string | undefined): boolean {
 function validateCandidateReport(
   report: ObservationFreezeReportV1 | undefined,
   reasons: string[],
+  decidedAt: string,
 ): boolean {
   if (report === undefined) {
     reasons.push("candidate Freeze Report is missing");
     return false;
   }
   let ok = true;
+  if (
+    !isValidIsoTimestamp(report.generatedAt) ||
+    Date.parse(report.generatedAt) > Date.parse(decidedAt)
+  ) {
+    reasons.push("candidate Freeze Report has no valid non-future timestamp");
+    ok = false;
+  }
   if (report.graphSchemaVersion !== OBSERVATION_GRAPH_V1_VERSION) {
     reasons.push(
       `candidate Freeze Report targets ${report.graphSchemaVersion}, not ${OBSERVATION_GRAPH_V1_VERSION}`,
@@ -524,9 +532,11 @@ export function decideGraphFreeze(
   now: () => string = () => new Date().toISOString(),
 ): FreezeDecision {
   const blockingReasons: string[] = [];
+  const decidedAt = now();
   const candidateReportValid = validateCandidateReport(
     candidateReport,
     blockingReasons,
+    decidedAt,
   );
   const windowsChecklistValid = validateWindowsChecklist(
     windowsChecklistEvidence,
@@ -542,7 +552,7 @@ export function decideGraphFreeze(
 
   const decision: FreezeDecision = {
     version: FREEZE_DECISION_VERSION,
-    decidedAt: now(),
+    decidedAt,
     graphSchemaVersion: OBSERVATION_GRAPH_V1_VERSION,
     status: frozen ? "frozen" : "candidate",
     inputs: {

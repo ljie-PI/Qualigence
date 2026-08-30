@@ -551,6 +551,7 @@ function closurePullRequest(legacyTicket: number) {
       status: "completed",
       conclusion: "success",
       checkCount: 1,
+      requiredChecks: ["focused-gate"],
     },
     checks: [
       {
@@ -581,6 +582,7 @@ function ticket34RemediationPullRequest() {
       status: "completed",
       conclusion: "success",
       checkCount: 1,
+      requiredChecks: ["focused-gate"],
     },
     checks: [
       {
@@ -1130,6 +1132,25 @@ async function writeReleaseFixture(
         runnerProtocolVersion: "runner-protocol/v1",
         windowsBuild: "Windows 11 23H2 22631",
         interactiveSessionType: "local",
+        acceptanceEnvironment: {
+          runnerVersion: version,
+          companionVersion: version,
+          observationGraphVersion: "observation-graph/v1",
+          skillCompilerVersion: "skill-compiler/v1",
+          windowsEdition: "Windows 11 Pro",
+          windowsBuild: "Windows 11 23H2 22631",
+          cpuArchitecture: "x64",
+          displayResolution: "1920x1080",
+          dpiScale: "100%",
+          systemLanguage: "en-US",
+          testAccount: "qualigence-acceptance",
+          interactiveSessionTypes: ["local", "rdp"],
+          runnerCertificateFingerprint: "a".repeat(64),
+          companionPipe: "\\\\.\\pipe\\qualigence-companion",
+          logonSid: "S-1-5-21-1000",
+          modelProvider: "reference-openai-compatible",
+          modelProfile: "ticket-48-reference-profile",
+        },
         operatorName: "human-a",
         reviewerName: "human-b",
         executedAt: "2026-08-29T00:00:00.000Z",
@@ -1778,6 +1799,43 @@ describe("finalizeGraphFreezeFromEvidence", () => {
         (capability) => capability.id === "github-closure",
       ),
     ).toMatchObject({ status: "verified", blockers: [] });
+  });
+
+  it("rejects GitHub PR evidence without the required check identity", async () => {
+    const repositoryRoot = await mkdtemp(
+      join(tmpdir(), "qualigence-freeze-github-required-check-"),
+    );
+    fixtureRoots.push(repositoryRoot);
+    const githubClosure = githubClosureFixture();
+    const ticketOne = mutableRecord(
+      githubClosure.tickets[0],
+      "legacy Ticket 01",
+    );
+    const pullRequest = mutableRecord(
+      ticketOne["pullRequest"],
+      "legacy Ticket 01 pull request",
+    );
+    const checks = pullRequest["checks"];
+    if (!Array.isArray(checks) || checks[0] === undefined) {
+      throw new Error("Ticket 01 fixture has no check");
+    }
+    mutableRecord(checks[0], "Ticket 01 check")["name"] = "arbitrary-success";
+    const reference = await writeEvidenceObject(
+      repositoryRoot,
+      "v0.1.0-candidate",
+      "github-closure.json",
+      githubClosure,
+    );
+
+    const result = await finalizeGraphFreezeFromEvidence(
+      finalizerInput(repositoryRoot, {
+        evidence: { githubClosure: reference },
+      }),
+    );
+
+    expect(result.decision.blockingReasons).toContain(
+      "GithubCheckMissing: github-closure",
+    );
   });
 
   it.each([
@@ -2974,6 +3032,16 @@ describe("finalizeGraphFreezeFromEvidence", () => {
       },
     },
     {
+      name: "future-dated candidate report",
+      key: "candidateMigration",
+      filename: "candidate-migration.json",
+      code: "MigrationReportVersionInvalid",
+      mutate: (evidence: Record<string, unknown>) => {
+        mutableRecord(evidence["report"], "migration report")["generatedAt"] =
+          "2026-08-30T09:00:00.000Z";
+      },
+    },
+    {
       name: "omitted active migration inventory",
       key: "candidateMigration",
       filename: "candidate-migration.json",
@@ -3239,6 +3307,7 @@ describe("finalizeGraphFreezeFromEvidence", () => {
     ["incomplete Windows checklist", "WindowsEvidenceItemMissing"],
     ["substituted Windows checklist item", "WindowsEvidenceItemInvalid"],
     ["cross-section Windows checklist ids", "WindowsEvidenceItemInvalid"],
+    ["missing Windows acceptance metadata", "WindowsEvidenceEnvironmentInvalid"],
     ["duplicate Windows signer", "WindowsEvidenceSignerInvalid"],
     ["incompatible Runner protocol", "WindowsEvidenceProtocolInvalid"],
     ["cross-commit CI artifact", "GateArtifactCommitMismatch"],
@@ -3272,6 +3341,7 @@ describe("finalizeGraphFreezeFromEvidence", () => {
       scenario === "incomplete Windows checklist" ||
       scenario === "substituted Windows checklist item" ||
       scenario === "cross-section Windows checklist ids" ||
+      scenario === "missing Windows acceptance metadata" ||
       scenario === "duplicate Windows signer" ||
       scenario === "incompatible Runner protocol"
     ) {
@@ -3299,6 +3369,8 @@ describe("finalizeGraphFreezeFromEvidence", () => {
         signatures.push(structuredClone(signatures[0]));
       } else if (scenario === "incompatible Runner protocol") {
         checklist["runnerProtocolVersion"] = "runner-protocol/v2";
+      } else if (scenario === "missing Windows acceptance metadata") {
+        delete checklist["acceptanceEnvironment"];
       } else {
         const items = checklist["items"];
         if (!Array.isArray(items) || items[0] === undefined) {

@@ -171,6 +171,25 @@ describe("decideGraphFreeze", () => {
     expect(decision.inputs.candidateReportValid).toBe(false);
   });
 
+  it("stays candidate when the candidate report timestamp is future-dated", () => {
+    const report = {
+      ...cleanCandidateReport(),
+      generatedAt: "2026-08-03T00:00:00.000Z",
+    };
+    const decision = decideGraphFreeze(
+      report,
+      validWindowsChecklistEvidence(),
+      validSchemaConformanceEvidence(),
+      NOW,
+    );
+
+    expect(decision.status).toBe("candidate");
+    expect(decision.inputs.candidateReportValid).toBe(false);
+    expect(decision.blockingReasons).toContain(
+      "candidate Freeze Report has no valid non-future timestamp",
+    );
+  });
+
   it("stays candidate when any required security-veto item did not pass", () => {
     const items = passingVetoItems();
     items[0] = { ...items[0]!, result: "fail" };

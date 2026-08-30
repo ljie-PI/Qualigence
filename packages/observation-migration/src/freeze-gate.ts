@@ -653,15 +653,26 @@ function validateCandidateMigrationEvidence(
     inventoryByIdentity.set(identity, assetKind);
   }
   const report = asRecord(evidence["report"], "candidate migration report");
+  const generatedAt = requireString(
+    report,
+    "generatedAt",
+    "candidate migration report",
+  );
   if (
     report["version"] !== OBSERVATION_FREEZE_REPORT_VERSION ||
     report["graphSchemaVersion"] !== OBSERVATION_GRAPH_V1_VERSION ||
     report["migratorVersion"] !== OBSERVATION_MIGRATOR_VERSION ||
-    report["status"] !== "candidate"
+    report["status"] !== "candidate" ||
+    !Number.isFinite(Date.parse(generatedAt)) ||
+    Date.parse(generatedAt) > Date.parse(input.decidedAt) ||
+    Date.parse(generatedAt) >
+      Date.parse(
+        requireString(evidence, "generatedAt", "candidate migration evidence"),
+      )
   ) {
     throw new EvidenceValidationError(
       "MigrationReportVersionInvalid",
-      "candidate migration report versions or lifecycle are invalid",
+      "candidate migration report versions, lifecycle, or timestamp are invalid",
     );
   }
   const results = requireArray(report, "results", "candidate migration report");
@@ -1287,6 +1298,25 @@ const REQUIRED_TICKET_34_REMEDIATION_REMOTE_HEAD =
   "1e3be71ec89391f34654c48e69e3fb233c4e6252";
 const REQUIRED_TICKET_34_REMEDIATION_REVIEWED_TREE =
   "6891de1111f98dc59ec63822fc7728643f4abb30";
+const REQUIRED_PULL_REQUEST_CHECK_NAMES = ["focused-gate"] as const;
+const REQUIRED_WINDOWS_ACCEPTANCE_METADATA_FIELDS = [
+  "runnerVersion",
+  "companionVersion",
+  "observationGraphVersion",
+  "skillCompilerVersion",
+  "windowsEdition",
+  "windowsBuild",
+  "cpuArchitecture",
+  "displayResolution",
+  "dpiScale",
+  "systemLanguage",
+  "testAccount",
+  "runnerCertificateFingerprint",
+  "companionPipe",
+  "logonSid",
+  "modelProvider",
+  "modelProfile",
+] as const;
 
 const KNOWN_CLOSURE_PULL_REQUESTS = new Set<number>();
 for (const value of [
@@ -1686,7 +1716,7 @@ async function validatePullRequest(
   const checkSuite = asRecord(pullRequest["checkSuite"], `${label}.checkSuite`);
   assertKeys(
     checkSuite,
-    ["status", "conclusion", "checkCount"],
+    ["status", "conclusion", "checkCount", "requiredChecks"],
     `${label}.checkSuite`,
   );
   const checkCount = requireSafeInteger(
@@ -1695,8 +1725,16 @@ async function validatePullRequest(
     `${label}.checkSuite`,
   );
   const checks = requireArray(pullRequest, "checks", label);
+  const requiredChecks = assertStringArray(
+    checkSuite["requiredChecks"],
+    `${label}.checkSuite.requiredChecks`,
+  );
   if (
     checks.length === 0 ||
+    requiredChecks.length !== REQUIRED_PULL_REQUEST_CHECK_NAMES.length ||
+    REQUIRED_PULL_REQUEST_CHECK_NAMES.some(
+      (name) => !requiredChecks.includes(name),
+    ) ||
     checkSuite["status"] !== "completed" ||
     checkSuite["conclusion"] !== "success" ||
     checkCount !== checks.length
@@ -1728,6 +1766,15 @@ async function validatePullRequest(
         `${label} check ${name} is not a same-head success`,
       );
     }
+  }
+  if (
+    checkNames.size !== requiredChecks.length ||
+    requiredChecks.some((name) => !checkNames.has(name))
+  ) {
+    throw new EvidenceValidationError(
+      "GithubCheckMissing",
+      `${label} does not prove every required check identity`,
+    );
   }
 }
 
@@ -3912,6 +3959,44 @@ function validateCompleteWindowsChecklist(
   input: FinalizeGraphFreezeInput,
 ): void {
   const { checklist } = payload;
+  const acceptanceEnvironmentValue = checklist["acceptanceEnvironment"];
+  if (
+    acceptanceEnvironmentValue === null ||
+    typeof acceptanceEnvironmentValue !== "object" ||
+    Array.isArray(acceptanceEnvironmentValue)
+  ) {
+    throw new EvidenceValidationError(
+      "WindowsEvidenceEnvironmentInvalid",
+      "Windows checklist acceptance metadata is missing",
+    );
+  }
+  const acceptanceEnvironment = acceptanceEnvironmentValue as Record<
+    string,
+    unknown
+  >;
+  for (const field of REQUIRED_WINDOWS_ACCEPTANCE_METADATA_FIELDS) {
+    const value = acceptanceEnvironment[field];
+    if (typeof value !== "string" || value.trim() === "") {
+      throw new EvidenceValidationError(
+        "WindowsEvidenceEnvironmentInvalid",
+        `Windows checklist acceptance metadata ${field} is missing`,
+      );
+    }
+  }
+  const sessionTypes = assertStringArray(
+    acceptanceEnvironment["interactiveSessionTypes"],
+    "WindowsChecklistEvidence.acceptanceEnvironment.interactiveSessionTypes",
+  );
+  if (
+    sessionTypes.length !== 2 ||
+    !sessionTypes.includes("local") ||
+    !sessionTypes.includes("rdp")
+  ) {
+    throw new EvidenceValidationError(
+      "WindowsEvidenceEnvironmentInvalid",
+      "Windows checklist acceptance metadata must prove local and RDP sessions",
+    );
+  }
   const securityVetoIds = assertStringArray(
     checklist["securityVetoItemIds"],
     "WindowsChecklistEvidence.securityVetoItemIds",
