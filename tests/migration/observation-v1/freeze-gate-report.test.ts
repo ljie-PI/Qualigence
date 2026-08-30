@@ -15,7 +15,10 @@ import { isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { canonicalJson, sha256Hex } from "@qualigence/skill";
-import { setReleaseVerifierRunnerForTests } from "../../../packages/observation-migration/dist/freeze-gate.js";
+import {
+  setReleaseVerifierRunnerForTests,
+  setReleaseVerifierSnapshotRemoverForTests,
+} from "../../../packages/observation-migration/dist/freeze-gate.js";
 import {
   buildFreezeReport,
   buildFreezeGateReport,
@@ -44,6 +47,10 @@ const FINALIZER_FIXTURE_ROOT = join(
   "freeze-finalizer",
 );
 const FINALIZER_COMMIT = "1e3be71ec89391f34654c48e69e3fb233c4e6252";
+const TICKET_34_REVIEWED_HEAD =
+  "dab2bc0021d3665ff00368a18ea02712346442fd";
+const TICKET_34_REVIEWED_TREE =
+  "6891de1111f98dc59ec63822fc7728643f4abb30";
 const CLOSURE_ISSUES = [
   140, 145, 143, 136, 139, 138, 141, 135, 137, 144, 134, 142, 157, 147, 155,
   150, 152, 153, 156, 149, 148, 151, 146, 154, 163, 159, 160, 167, 168, 161,
@@ -549,6 +556,33 @@ function closurePullRequest(legacyTicket: number) {
   };
 }
 
+function ticket34RemediationPullRequest() {
+  return {
+    number: 183,
+    url: "https://github.com/ljie-PI/Qualigence/pull/183",
+    state: "closed",
+    mergedAt: "2026-08-29T00:00:00.000Z",
+    reviewedHead: TICKET_34_REVIEWED_HEAD,
+    reviewedTree: TICKET_34_REVIEWED_TREE,
+    remoteHead: FINALIZER_COMMIT,
+    mergeCommit: FINALIZER_COMMIT,
+    changedFiles: [".github/workflows/release.yml"],
+    postReviewFiles: [],
+    checkSuite: {
+      status: "completed",
+      conclusion: "success",
+      checkCount: 1,
+    },
+    checks: [
+      {
+        name: "focused-gate",
+        conclusion: "success",
+        commit: FINALIZER_COMMIT,
+      },
+    ],
+  };
+}
+
 function githubClosureFixture() {
   const tickets = CLOSURE_ISSUES.map((issueNumber, index) => {
     const legacyTicket = index + 1;
@@ -567,7 +601,7 @@ function githubClosureFixture() {
         },
       };
     }
-    return {
+    const ticket = {
       legacyTicket,
       issue: {
         number: issueNumber,
@@ -580,6 +614,12 @@ function githubClosureFixture() {
       },
       pullRequest: closurePullRequest(legacyTicket),
     };
+    return legacyTicket === 34
+      ? {
+          ...ticket,
+          remediationPullRequests: [ticket34RemediationPullRequest()],
+        }
+      : ticket;
   });
   const remediation = REMEDIATION_ISSUES.map((issueNumber, index) => {
     const legacyTicket = index + 36;
@@ -700,13 +740,36 @@ function githubApiCaptureFixture(value: unknown): Record<string, unknown> {
   for (const value of evidence["tickets"] as readonly unknown[]) {
     const ticket = mutableRecord(value, "GitHub closure ticket fixture");
     const legacyTicket = Number(ticket["legacyTicket"]);
+    const remediationPullRequests =
+      legacyTicket === 34
+        ? (ticket["remediationPullRequests"] as readonly unknown[])
+        : [];
     addIssue(
       ticket["issue"],
       legacyTicket === 35
         ? [Number(capture["ticket35ClosingPullRequest"])]
-        : [],
+        : legacyTicket === 34
+          ? [
+              Number(
+                mutableRecord(
+                  ticket["pullRequest"],
+                  "GitHub closure pull request fixture",
+                )["number"],
+              ),
+              ...remediationPullRequests.map((value) =>
+                Number(
+                  mutableRecord(value, "Ticket 34 remediation pull request")[
+                    "number"
+                  ],
+                ),
+              ),
+            ]
+          : [],
     );
     addPullRequest(ticket["pullRequest"]);
+    for (const remediationPullRequest of remediationPullRequests) {
+      addPullRequest(remediationPullRequest);
+    }
   }
   for (const value of evidence["remediation"] as readonly unknown[]) {
     const ticket = mutableRecord(value, "GitHub remediation ticket fixture");
@@ -1706,6 +1769,63 @@ describe("finalizeGraphFreezeFromEvidence", () => {
         (capability) => capability.id === "github-closure",
       ),
     ).toMatchObject({ status: "verified", blockers: [] });
+  });
+
+  it.each([
+    {
+      name: "missing Ticket 34 producer remediation PR",
+      mutate: (pullRequests: unknown[]) => {
+        pullRequests.splice(0);
+      },
+      blocker: "GithubPullRequestNotMerged: github-closure",
+    },
+    {
+      name: "wrong Ticket 34 producer remediation PR",
+      mutate: (pullRequests: unknown[]) => {
+        mutableRecord(pullRequests[0], "Ticket 34 remediation pull request")[
+          "number"
+        ] = 182;
+      },
+      blocker: "GithubPullRequestUnexpected: github-closure",
+    },
+    {
+      name: "mismatched Ticket 34 reviewed tree",
+      mutate: (pullRequests: unknown[]) => {
+        mutableRecord(pullRequests[0], "Ticket 34 remediation pull request")[
+          "reviewedTree"
+        ] = "f".repeat(40);
+      },
+      blocker: "GithubReviewedHeadMismatch: github-closure",
+    },
+  ])("rejects $name evidence", async ({ mutate, blocker }) => {
+    const repositoryRoot = await mkdtemp(
+      join(tmpdir(), "qualigence-freeze-ticket34-remediation-"),
+    );
+    fixtureRoots.push(repositoryRoot);
+    const githubClosure = githubClosureFixture();
+    const ticket34 = mutableRecord(
+      githubClosure.tickets[33],
+      "legacy Ticket 34",
+    );
+    const pullRequests = ticket34["remediationPullRequests"];
+    if (!Array.isArray(pullRequests)) {
+      throw new Error("Ticket 34 fixture has no remediation pull requests");
+    }
+    mutate(pullRequests);
+    const reference = await writeEvidenceObject(
+      repositoryRoot,
+      "v0.1.0-candidate",
+      "github-closure.json",
+      githubClosure,
+    );
+
+    const result = await finalizeGraphFreezeFromEvidence(
+      finalizerInput(repositoryRoot, {
+        evidence: { githubClosure: reference },
+      }),
+    );
+
+    expect(result.decision.blockingReasons).toContain(blocker);
   });
 
   it("rejects GitHub closure state without canonical URL/API capture provenance", async () => {
@@ -3271,6 +3391,40 @@ describe("finalizeGraphFreezeFromEvidence", () => {
     ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("preserves verifier timeout classification when snapshot cleanup also fails", async () => {
+    const repositoryRoot = await mkdtemp(
+      join(tmpdir(), "qualigence-freeze-timeout-cleanup-"),
+    );
+    fixtureRoots.push(repositoryRoot);
+    const releaseManifest = await writeReleaseFixture(
+      repositoryRoot,
+      "v0.1.0-candidate",
+    );
+    const restoreRunner = setReleaseVerifierRunnerForTests(async () => {
+      throw { killed: true, message: "fixture timeout" };
+    });
+    const restoreRemover = setReleaseVerifierSnapshotRemoverForTests(
+      async () => {
+        throw new Error("fixture cleanup failure");
+      },
+    );
+    try {
+      await expect(
+        finalizeGraphFreezeFromEvidence(
+          finalizerInput(repositoryRoot, {
+            evidence: { releaseManifest },
+          }),
+        ),
+      ).rejects.toMatchObject({
+        code: "FinalizationAborted",
+        message: expect.stringContaining("snapshot cleanup also failed"),
+      });
+    } finally {
+      restoreRemover();
+      restoreRunner();
+    }
+  });
+
   it("cancels after the temporary write and cleans non-terminal state", async () => {
     const repositoryRoot = await mkdtemp(
       join(tmpdir(), "qualigence-freeze-mid-cancel-"),
@@ -3362,6 +3516,61 @@ describe("finalizeGraphFreezeFromEvidence", () => {
     ).rejects.toMatchObject({ code: "DecisionArtifactConflict" });
     expect(await readFile(first.path, "utf8")).toBe(originalBytes);
     expect(await readFile(orphanPath, "utf8")).toBe("not terminal evidence\n");
+  });
+
+  it("rejects a symlinked terminal parent without writing outside the repository", async () => {
+    const repositoryRoot = await mkdtemp(
+      join(tmpdir(), "qualigence-freeze-output-symlink-"),
+    );
+    const externalRoot = await mkdtemp(
+      join(tmpdir(), "qualigence-freeze-output-external-"),
+    );
+    fixtureRoots.push(repositoryRoot, externalRoot);
+    const releaseRoot = join(repositoryRoot, "artifacts", "release");
+    await mkdir(releaseRoot, { recursive: true });
+    await symlink(
+      externalRoot,
+      join(releaseRoot, "v0.1.0-candidate"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+
+    await expect(
+      finalizeGraphFreezeFromEvidence(finalizerInput(repositoryRoot)),
+    ).rejects.toMatchObject({ code: "DecisionArtifactWriteFailed" });
+    await expect(
+      readFile(join(externalRoot, "graph-freeze-decision.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readdir(externalRoot)).toEqual([]);
+  });
+
+  it("rejects an existing terminal junction without following it", async () => {
+    const repositoryRoot = await mkdtemp(
+      join(tmpdir(), "qualigence-freeze-terminal-symlink-"),
+    );
+    const externalRoot = await mkdtemp(
+      join(tmpdir(), "qualigence-freeze-terminal-external-"),
+    );
+    fixtureRoots.push(repositoryRoot, externalRoot);
+    const releaseRoot = join(
+      repositoryRoot,
+      "artifacts",
+      "release",
+      "v0.1.0-candidate",
+    );
+    await mkdir(releaseRoot, { recursive: true });
+    await symlink(
+      externalRoot,
+      join(releaseRoot, "graph-freeze-decision.json"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+
+    await expect(
+      finalizeGraphFreezeFromEvidence(finalizerInput(repositoryRoot)),
+    ).rejects.toMatchObject({
+      code: "DecisionArtifactWriteFailed",
+      message: expect.stringContaining("symbolic-link or junction"),
+    });
+    expect(await readdir(externalRoot)).toEqual([]);
   });
 
   it("surfaces terminal persistence failures as typed errors", async () => {

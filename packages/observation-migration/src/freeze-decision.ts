@@ -249,6 +249,7 @@ export interface GraphFreezeFinalizationResult {
 export type GraphFreezeFinalizationErrorCode =
   | "FinalizerInputInvalid"
   | "FinalizationAborted"
+  | "ReleaseVerifierCleanupFailed"
   | "DecisionArtifactConflict"
   | "DecisionArtifactWriteFailed";
 

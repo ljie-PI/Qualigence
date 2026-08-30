@@ -60,7 +60,10 @@ The decision covers these capabilities:
 1. GitHub Issue #67's exact ticket dependency graph plus
    PR/review/check/commit closure, hash-bound to a canonical GraphQL/REST API
    capture. Local Git objects independently verify merge ancestry and any
-   reviewed-head-to-remote-head documentation-only delta.
+   reviewed-head-to-remote-head documentation-only delta. Ticket 34 closure
+   requires both original PR #133 and producer-remediation PR #183. The
+   API-normalized PR #183 head is accepted only when its declared reviewed tree
+   matches both locally available commit trees byte-for-byte.
 2. Candidate migration inventory and Freeze Report.
 3. Hash-linked command-produced Web/Desktop Graph v1 and lossless `uia/v1`
    conformance reports.
@@ -77,7 +80,10 @@ The finalizer reuses `scripts/verify-release-manifest.mjs`; it does not duplicat
 or weaken Ticket 34's release authority. It atomically creates exactly
 `artifacts/release/<version>/graph-freeze-decision.json`. Byte-identical replay is
 idempotent, conflicting replay never overwrites the terminal artifact, and
-cancellation or persistence failure cannot return success-shaped output.
+cancellation or persistence failure cannot return success-shaped output. Every
+existing terminal-path component is checked with `lstat` and canonical
+containment before reconciliation or publication; symbolic links and junctions
+are rejected.
 The production finalizer always removes Ticket 34's offline-attestation fixture
 override; tests use a test-only wrapper that delegates to the authoritative
 verifier with fixture mode isolated inside the temporary test repository.

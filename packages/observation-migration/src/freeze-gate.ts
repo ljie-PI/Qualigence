@@ -1274,6 +1274,8 @@ const REQUIRED_REMEDIATION_PULL_REQUESTS = [
   127,
 ] as const;
 
+const REQUIRED_TICKET_34_REMEDIATION_PULL_REQUEST = 183;
+
 const KNOWN_CLOSURE_PULL_REQUESTS = new Set<number>();
 for (const value of [
   ...REQUIRED_CLOSURE_PULL_REQUESTS,
@@ -1283,6 +1285,7 @@ for (const value of [
     KNOWN_CLOSURE_PULL_REQUESTS.add(value);
   }
 }
+KNOWN_CLOSURE_PULL_REQUESTS.add(REQUIRED_TICKET_34_REMEDIATION_PULL_REQUEST);
 
 const REQUIRED_PROVIDER_VARIABLES = [
   "QUALIGENCE_REFERENCE_MODEL_BASE_URL",
@@ -1434,14 +1437,45 @@ async function repositoryChangedFiles(
   }
 }
 
+async function repositoryTreeHash(
+  repositoryRoot: string,
+  commit: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      ["-C", repositoryRoot, "rev-parse", `${commit}^{tree}`],
+      { maxBuffer: 1024 * 1024, signal },
+    );
+    return requireCommit(stdout.trim(), `${commit} tree`);
+  } catch (error) {
+    if (signal?.aborted === true) {
+      throw new GraphFreezeFinalizationError(
+        "FinalizationAborted",
+        "Graph freeze finalization was cancelled during review-tree validation",
+      );
+    }
+    if (error instanceof EvidenceValidationError) {
+      throw error;
+    }
+    throw new EvidenceValidationError(
+      "GithubReviewedHeadMismatch",
+      `local repository cannot verify the remote review tree: ${errorMessage(error)}`,
+    );
+  }
+}
+
 function assertCanonicalPullRequest(
   ticket: number,
   pullRequestNumber: number,
+  expectedOverride?: number,
 ): void {
   const expected =
-    ticket <= 35
+    expectedOverride ??
+    (ticket <= 35
       ? REQUIRED_CLOSURE_PULL_REQUESTS[ticket - 1]
-      : REQUIRED_REMEDIATION_PULL_REQUESTS[ticket - 36];
+      : REQUIRED_REMEDIATION_PULL_REQUESTS[ticket - 36]);
   const valid =
     expected === "ticket-35"
       ? !KNOWN_CLOSURE_PULL_REQUESTS.has(pullRequestNumber)
@@ -1461,6 +1495,7 @@ async function validatePullRequest(
   graph: ReadonlyMap<string, readonly string[]>,
   ancestors: ReadonlySet<string>,
   seenPullRequests: Set<number>,
+  expectedPullRequest?: number,
 ): Promise<void> {
   const label = `Ticket ${ticket} pull request`;
   const pullRequest = asRecord(value, label);
@@ -1472,6 +1507,7 @@ async function validatePullRequest(
       "state",
       "mergedAt",
       "reviewedHead",
+      "reviewedTree",
       "remoteHead",
       "mergeCommit",
       "changedFiles",
@@ -1488,7 +1524,7 @@ async function validatePullRequest(
       `${label} number is missing or duplicated`,
     );
   }
-  assertCanonicalPullRequest(ticket, number);
+  assertCanonicalPullRequest(ticket, number, expectedPullRequest);
   seenPullRequests.add(number);
   if (
     pullRequest["url"] !==
@@ -1513,6 +1549,24 @@ async function validatePullRequest(
     pullRequest["mergeCommit"],
     `${label}.mergeCommit`,
   );
+  const reviewedTree =
+    pullRequest["reviewedTree"] === undefined
+      ? undefined
+      : requireCommit(pullRequest["reviewedTree"], `${label}.reviewedTree`);
+  if (
+    reviewedTree !== undefined &&
+    reviewedTree !==
+      (await repositoryTreeHash(
+        input.repositoryRoot,
+        reviewedHead,
+        input.signal,
+      ))
+  ) {
+    throw new EvidenceValidationError(
+      "GithubReviewedHeadMismatch",
+      `${label} reviewed-tree binding does not match its reviewed head`,
+    );
+  }
   if (!ancestors.has(mergeCommit)) {
     throw new EvidenceValidationError(
       "GithubCommitNotAncestor",
@@ -1526,12 +1580,6 @@ async function validatePullRequest(
     );
   }
   if (reviewedHead !== remoteHead) {
-    if (!commitAncestors(graph, remoteHead).has(reviewedHead)) {
-      throw new EvidenceValidationError(
-        "GithubReviewedHeadMismatch",
-        `${label} remote head does not descend from its reviewed head`,
-      );
-    }
     const postReviewFiles = [
       ...assertStringArrayAllowEmpty(
         pullRequest["postReviewFiles"],
@@ -1544,6 +1592,24 @@ async function validatePullRequest(
       remoteHead,
       input.signal,
     );
+    const treeEquivalentNormalization =
+      actualPostReviewFiles.length === 0 &&
+      reviewedTree !== undefined &&
+      reviewedTree ===
+        (await repositoryTreeHash(
+          input.repositoryRoot,
+          remoteHead,
+          input.signal,
+        ));
+    if (
+      !treeEquivalentNormalization &&
+      !commitAncestors(graph, remoteHead).has(reviewedHead)
+    ) {
+      throw new EvidenceValidationError(
+        "GithubReviewedHeadMismatch",
+        `${label} remote head neither descends from nor tree-matches its reviewed head`,
+      );
+    }
     if (
       canonicalJson(postReviewFiles) !== canonicalJson(actualPostReviewFiles) ||
       postReviewFiles.some(
@@ -1561,12 +1627,19 @@ async function validatePullRequest(
         `${label} changed code or tests after its reviewed head`,
       );
     }
+    if (treeEquivalentNormalization && postReviewFiles.length !== 0) {
+      throw new EvidenceValidationError(
+        "GithubReviewedHeadMismatch",
+        `${label} records a post-review diff for a tree-equivalent normalized head`,
+      );
+    }
   } else if (
-    pullRequest["postReviewFiles"] !== undefined &&
-    assertStringArrayAllowEmpty(
-      pullRequest["postReviewFiles"],
-      `${label}.postReviewFiles`,
-    ).length !== 0
+    (pullRequest["postReviewFiles"] !== undefined &&
+      assertStringArrayAllowEmpty(
+        pullRequest["postReviewFiles"],
+        `${label}.postReviewFiles`,
+      ).length !== 0) ||
+    pullRequest["reviewedTree"] !== undefined
   ) {
     throw new EvidenceValidationError(
       "GithubReviewedHeadMismatch",
@@ -1882,7 +1955,7 @@ async function validateGithubClosureEvidence(
     const ticket = asRecord(value, "GitHub closure ticket");
     assertKeys(
       ticket,
-      ["legacyTicket", "issue", "pullRequest"],
+      ["legacyTicket", "issue", "pullRequest", "remediationPullRequests"],
       "GitHub closure ticket",
     );
     const legacyTicket = requireSafeInteger(
@@ -1928,12 +2001,41 @@ async function validateGithubClosureEvidence(
             "number",
             "GitHub pull request evidence",
           );
+    const remediationValue = ticket["remediationPullRequests"];
+    if (
+      (legacyTicket === 34 &&
+        (!Array.isArray(remediationValue) ||
+          remediationValue.length !== 1)) ||
+      (legacyTicket !== 34 && remediationValue !== undefined)
+    ) {
+      throw new EvidenceValidationError(
+        "GithubPullRequestNotMerged",
+        "only legacy Ticket 34 must include its single producer remediation pull request",
+      );
+    }
+    const remediationPullRequests =
+      legacyTicket === 34 && Array.isArray(remediationValue)
+        ? remediationValue
+        : [];
+    const remediationPullRequestNumbers = remediationPullRequests.map(
+      (pullRequest) =>
+        requireSafeInteger(
+          asRecord(
+            pullRequest,
+            "legacy Ticket 34 remediation pull request",
+          ),
+          "number",
+          "legacy Ticket 34 remediation pull request",
+        ),
+    );
     assertGithubIssueCapture(
       apiCapture,
       issue,
       legacyTicket === 35 && pullRequestNumber !== undefined
         ? [pullRequestNumber]
-        : [],
+        : legacyTicket === 34 && pullRequestNumber !== undefined
+          ? [pullRequestNumber, ...remediationPullRequestNumbers]
+          : [],
     );
     if (
       issue["number"] !== REQUIRED_CLOSURE_ISSUES[legacyTicket - 1] ||
@@ -2029,6 +2131,18 @@ async function validateGithubClosureEvidence(
         graph,
         ancestors,
         seenPullRequests,
+      );
+    }
+    for (const remediationPullRequest of remediationPullRequests) {
+      assertGithubPullRequestCapture(apiCapture, remediationPullRequest);
+      await validatePullRequest(
+        remediationPullRequest,
+        legacyTicket,
+        input,
+        graph,
+        ancestors,
+        seenPullRequests,
+        REQUIRED_TICKET_34_REMEDIATION_PULL_REQUEST,
       );
     }
   }
@@ -3942,7 +4056,13 @@ type ReleaseVerifierRunner = (
   invocation: ReleaseVerifierInvocation,
 ) => Promise<void>;
 
+type ReleaseVerifierSnapshotRemover = (snapshotRoot: string) => Promise<void>;
+
 let releaseVerifierRunnerForTests: ReleaseVerifierRunner | undefined;
+let releaseVerifierSnapshotRemoverForTests:
+  | ReleaseVerifierSnapshotRemover
+  | undefined;
+const releaseVerifierCleanupFailures = new WeakMap<object, unknown>();
 
 export function setReleaseVerifierRunnerForTests(
   runner: ReleaseVerifierRunner,
@@ -3962,6 +4082,27 @@ export function setReleaseVerifierRunnerForTests(
   releaseVerifierRunnerForTests = runner;
   return () => {
     releaseVerifierRunnerForTests = undefined;
+  };
+}
+
+export function setReleaseVerifierSnapshotRemoverForTests(
+  remover: ReleaseVerifierSnapshotRemover,
+): () => void {
+  if (process.env["NODE_ENV"] !== "test" || process.env["VITEST"] !== "true") {
+    throw new GraphFreezeFinalizationError(
+      "FinalizerInputInvalid",
+      "the release-verifier cleanup test seam is available only inside Vitest",
+    );
+  }
+  if (releaseVerifierSnapshotRemoverForTests !== undefined) {
+    throw new GraphFreezeFinalizationError(
+      "FinalizerInputInvalid",
+      "the release-verifier cleanup test seam is already active",
+    );
+  }
+  releaseVerifierSnapshotRemoverForTests = remover;
+  return () => {
+    releaseVerifierSnapshotRemoverForTests = undefined;
   };
 }
 
@@ -4074,6 +4215,7 @@ async function runSelectedReleaseVerifier(
     input.version,
     "release-manifest.json",
   );
+  let primaryError: unknown;
   try {
     await Promise.all([
       mkdir(dirname(verifierPath), { recursive: true }),
@@ -4139,13 +4281,35 @@ async function runSelectedReleaseVerifier(
     } else {
       await runner(invocation);
     }
+  } catch (error) {
+    primaryError = error;
+    throw error;
   } finally {
-    await rm(snapshotRoot, {
-      recursive: true,
-      force: true,
-      maxRetries: 5,
-      retryDelay: 50,
-    });
+    try {
+      const remover = releaseVerifierSnapshotRemoverForTests;
+      if (remover === undefined) {
+        await rm(snapshotRoot, {
+          recursive: true,
+          force: true,
+          maxRetries: 5,
+          retryDelay: 50,
+        });
+      } else {
+        await remover(snapshotRoot);
+      }
+    } catch (cleanupError) {
+      if (
+        (typeof primaryError === "object" && primaryError !== null) ||
+        typeof primaryError === "function"
+      ) {
+        releaseVerifierCleanupFailures.set(primaryError, cleanupError);
+        throw primaryError;
+      }
+      throw new GraphFreezeFinalizationError(
+        "ReleaseVerifierCleanupFailed",
+        `release-verifier snapshot cleanup failed: ${errorMessage(cleanupError)}`,
+      );
+    }
   }
 }
 
@@ -4199,6 +4363,18 @@ async function validateReleaseManifestEvidence(
   try {
     await runSelectedReleaseVerifier(input, manifest, manifestBytes);
   } catch (error) {
+    const cleanupFailure =
+      (typeof error === "object" && error !== null) ||
+      typeof error === "function"
+        ? releaseVerifierCleanupFailures.get(error)
+        : undefined;
+    const cleanupSuffix =
+      cleanupFailure === undefined
+        ? ""
+        : `; snapshot cleanup also failed: ${errorMessage(cleanupFailure)}`;
+    if (error instanceof GraphFreezeFinalizationError) {
+      throw error;
+    }
     if (
       input.signal?.aborted === true ||
       (typeof error === "object" &&
@@ -4209,13 +4385,13 @@ async function validateReleaseManifestEvidence(
       throw new GraphFreezeFinalizationError(
         "FinalizationAborted",
         input.signal?.aborted === true
-          ? "Graph freeze finalization was cancelled during release verification"
-          : "Graph freeze finalization timed out during release verification",
+          ? `Graph freeze finalization was cancelled during release verification${cleanupSuffix}`
+          : `Graph freeze finalization timed out during release verification${cleanupSuffix}`,
       );
     }
     throw new EvidenceValidationError(
       verifierErrorCode(error),
-      `Ticket 34 release-manifest verification failed: ${errorMessage(error)}`,
+      `Ticket 34 release-manifest verification failed: ${errorMessage(error)}${cleanupSuffix}`,
     );
   }
   await readEvidenceBytes(input, "release-manifest", manifestReferenceValue);
@@ -4622,19 +4798,24 @@ async function reconcileProviderBenchmarkIdentity(
 }
 
 async function publishDecision(
+  repositoryRoot: string,
   path: string,
   bytes: string,
   signal: AbortSignal | undefined,
 ): Promise<void> {
   const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
   try {
+    await assertDecisionOutputPath(repositoryRoot, path);
     await mkdir(dirname(path), { recursive: true });
+    await assertDecisionOutputPath(repositoryRoot, path);
     await writeFile(temporary, bytes, { encoding: "utf8", flag: "wx" });
     abortIfRequested(signal);
+    await assertDecisionOutputPath(repositoryRoot, path);
     try {
       await link(temporary, path);
     } catch (error) {
       try {
+        await assertDecisionOutputPath(repositoryRoot, path);
         const existing = await readFile(path, "utf8");
         if (existing === bytes) {
           return;
@@ -4657,6 +4838,7 @@ async function publishDecision(
       }
       throw error;
     }
+    await assertDecisionOutputPath(repositoryRoot, path);
     const published = await readFile(path, "utf8");
     if (published !== bytes) {
       throw new GraphFreezeFinalizationError(
@@ -4677,6 +4859,7 @@ async function publishDecision(
       await rm(temporary, { force: true });
     } catch (error) {
       try {
+        await assertDecisionOutputPath(repositoryRoot, path);
         const published = await readFile(path, "utf8");
         if (published !== bytes) {
           throw error;
@@ -4687,6 +4870,65 @@ async function publishDecision(
           `could not clean terminal temporary state for ${path}: ${errorMessage(error)}`,
         );
       }
+    }
+  }
+}
+
+async function assertDecisionOutputPath(
+  repositoryRoot: string,
+  path: string,
+): Promise<void> {
+  const absoluteRoot = resolve(repositoryRoot);
+  const absolutePath = resolve(path);
+  const lexicalRelative = relative(absoluteRoot, absolutePath);
+  if (
+    lexicalRelative === ".." ||
+    lexicalRelative.startsWith(`..${sep}`) ||
+    isAbsolute(lexicalRelative)
+  ) {
+    throw new GraphFreezeFinalizationError(
+      "DecisionArtifactWriteFailed",
+      `${path} is outside repository root ${repositoryRoot}`,
+    );
+  }
+
+  const canonicalRoot = await realpath(absoluteRoot);
+  let cursor = absoluteRoot;
+  const components = lexicalRelative.split(sep).filter((part) => part !== "");
+  for (const [index, component] of components.entries()) {
+    cursor = join(cursor, component);
+    let stats;
+    try {
+      stats = await lstat(cursor);
+    } catch (error) {
+      if (hasCode(error, "ENOENT")) {
+        return;
+      }
+      throw error;
+    }
+    if (stats.isSymbolicLink()) {
+      throw new GraphFreezeFinalizationError(
+        "DecisionArtifactWriteFailed",
+        `${cursor} is a symbolic-link or junction component`,
+      );
+    }
+    if (index < components.length - 1 && !stats.isDirectory()) {
+      throw new GraphFreezeFinalizationError(
+        "DecisionArtifactWriteFailed",
+        `${cursor} is not a directory`,
+      );
+    }
+    const canonicalCursor = await realpath(cursor);
+    const canonicalRelative = relative(canonicalRoot, canonicalCursor);
+    if (
+      canonicalRelative === ".." ||
+      canonicalRelative.startsWith(`..${sep}`) ||
+      isAbsolute(canonicalRelative)
+    ) {
+      throw new GraphFreezeFinalizationError(
+        "DecisionArtifactWriteFailed",
+        `${cursor} resolves outside repository root ${repositoryRoot}`,
+      );
     }
   }
 }
@@ -4726,7 +4968,7 @@ export async function finalizeGraphFreezeFromEvidence(
       "graph-freeze-decision.json",
     ),
   );
-  await publishDecision(path, bytes, input.signal);
+  await publishDecision(input.repositoryRoot, path, bytes, input.signal);
   return {
     path,
     sha256: createHash("sha256").update(bytes).digest("hex"),
