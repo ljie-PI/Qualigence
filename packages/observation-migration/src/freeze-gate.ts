@@ -274,7 +274,7 @@ function validateFinalizerInput(input: FinalizeGraphFreezeInput): void {
     input.version === "." ||
     input.version === ".." ||
     !/^[a-f0-9]{40}$/u.test(input.commit) ||
-    !Number.isFinite(Date.parse(input.decidedAt)) ||
+    !isCanonicalTimestamp(input.decidedAt) ||
     input.repositoryRoot.trim() === ""
   ) {
     throw new GraphFreezeFinalizationError(
@@ -282,6 +282,24 @@ function validateFinalizerInput(input: FinalizeGraphFreezeInput): void {
       "repository, version, commit, decidedAt, and repositoryRoot must be valid",
     );
   }
+}
+
+function isCanonicalTimestamp(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value)) {
+    return false;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
+}
+
+function timestampMillis(value: string, label: string): number {
+  if (!isCanonicalTimestamp(value)) {
+    throw new EvidenceValidationError(
+      "EvidenceStale",
+      `${label} must be a canonical ISO-8601 UTC timestamp`,
+    );
+  }
+  return Date.parse(value);
 }
 
 function abortIfRequested(signal: AbortSignal | undefined): void {
@@ -423,11 +441,8 @@ function assertBinding(
     );
   }
   const generatedAt = requireString(record, "generatedAt", label);
-  const generatedTime = Date.parse(generatedAt);
-  if (
-    !Number.isFinite(generatedTime) ||
-    generatedTime > Date.parse(input.decidedAt)
-  ) {
+  const generatedTime = timestampMillis(generatedAt, `${label}.generatedAt`);
+  if (generatedTime > timestampMillis(input.decidedAt, "decidedAt")) {
     throw new EvidenceValidationError(
       "EvidenceStale",
       `${label}.generatedAt must be valid and no later than decidedAt`,
@@ -663,11 +678,12 @@ function validateCandidateMigrationEvidence(
     report["graphSchemaVersion"] !== OBSERVATION_GRAPH_V1_VERSION ||
     report["migratorVersion"] !== OBSERVATION_MIGRATOR_VERSION ||
     report["status"] !== "candidate" ||
-    !Number.isFinite(Date.parse(generatedAt)) ||
-    Date.parse(generatedAt) > Date.parse(input.decidedAt) ||
-    Date.parse(generatedAt) >
-      Date.parse(
+    timestampMillis(generatedAt, "candidate migration report.generatedAt") >
+      timestampMillis(input.decidedAt, "decidedAt") ||
+    timestampMillis(generatedAt, "candidate migration report.generatedAt") >
+      timestampMillis(
         requireString(evidence, "generatedAt", "candidate migration evidence"),
+        "candidate migration evidence.generatedAt",
       )
   ) {
     throw new EvidenceValidationError(
@@ -1577,7 +1593,7 @@ async function validatePullRequest(
     pullRequest["url"] !==
       `https://github.com/${input.repository}/pull/${number}` ||
     pullRequest["state"] !== "closed" ||
-    !Number.isFinite(Date.parse(requireString(pullRequest, "mergedAt", label)))
+    !isCanonicalTimestamp(requireString(pullRequest, "mergedAt", label))
   ) {
     throw new EvidenceValidationError(
       "GithubPullRequestNotMerged",
@@ -3079,6 +3095,11 @@ async function validateBenchmarkEvidence(
   ]) {
     requirePositiveInteger(profile, key, "benchmark reference profile");
   }
+  const maximumModelTokens = requirePositiveInteger(
+    profile,
+    "maximumModelTokens",
+    "benchmark reference profile",
+  );
   const repetitions = requirePositiveInteger(
     profile,
     "repetitions",
@@ -3493,10 +3514,10 @@ async function validateBenchmarkEvidence(
     report["manifestSha256"] !== manifestHash ||
     report["groundTruthSha256"] !== groundTruthHash ||
     report["inputSha256"] !== expectedInputSha256 ||
-    !Number.isFinite(
-      Date.parse(requireString(report, "createdAt", "benchmark report")),
-    ) ||
-    Date.parse(String(report["createdAt"])) > Date.parse(input.decidedAt)
+    timestampMillis(
+      requireString(report, "createdAt", "benchmark report"),
+      "benchmark report.createdAt",
+    ) > timestampMillis(input.decidedAt, "decidedAt")
   ) {
     throw new EvidenceValidationError(
       "BenchmarkReportInvalid",
@@ -3556,6 +3577,7 @@ async function validateBenchmarkEvidence(
   );
   const invocationIds = new Set<string>();
   const invocationAttempts = new Map<string, string>();
+  const invocationTokens = new Map<string, number>();
   for (const [index, value] of invocations.entries()) {
     const label = `benchmark invocation ${index}`;
     const invocation = asRecord(value, label);
@@ -3604,6 +3626,7 @@ async function validateBenchmarkEvidence(
     }
     invocationIds.add(invocationId);
     invocationAttempts.set(invocationId, invocationAttemptId);
+    invocationTokens.set(invocationId, totalTokens);
   }
 
   const attempts = requireArray(evidence, "attempts", "benchmark evidence");
@@ -3674,6 +3697,10 @@ async function validateBenchmarkEvidence(
       },
     );
     const slot = `${scenarioId}\u0000${repetition}`;
+    const attemptTotalTokens = attemptInvocationIds.reduce(
+      (sum, invocationId) => sum + (invocationTokens.get(invocationId) ?? 0),
+      0,
+    );
     const manifestScenario = scenariosById.get(scenarioId);
     const scenarioDefinition = definitionsByScenario.get(scenarioId);
     const sourceBindingHash =
@@ -3726,6 +3753,12 @@ async function validateBenchmarkEvidence(
       throw new EvidenceValidationError(
         "BenchmarkAttemptMatrixIncomplete",
         `${label} is not a unique, complete, invocation-bound matrix entry`,
+      );
+    }
+    if (attemptTotalTokens > maximumModelTokens) {
+      throw new EvidenceValidationError(
+        "BenchmarkInvocationInvalid",
+        `${label} exceeds the Reference Model token budget`,
       );
     }
     seenSlots.add(slot);

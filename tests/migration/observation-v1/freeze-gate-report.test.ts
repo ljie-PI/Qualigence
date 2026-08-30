@@ -3056,6 +3056,16 @@ describe("finalizeGraphFreezeFromEvidence", () => {
       },
     },
     {
+      name: "non-ISO candidate report timestamp",
+      key: "candidateMigration",
+      filename: "candidate-migration.json",
+      code: "EvidenceStale",
+      mutate: (evidence: Record<string, unknown>) => {
+        mutableRecord(evidence["report"], "migration report")["generatedAt"] =
+          "August 30, 2026";
+      },
+    },
+    {
       name: "future-dated candidate report",
       key: "candidateMigration",
       filename: "candidate-migration.json",
@@ -3187,6 +3197,25 @@ describe("finalizeGraphFreezeFromEvidence", () => {
         delete mutableRecord(invocations[0], "benchmark invocation")[
           "totalTokens"
         ];
+      },
+    },
+    {
+      name: "benchmark attempt over token budget",
+      key: "benchmark",
+      filename: "benchmark.json",
+      code: "BenchmarkInvocationInvalid",
+      mutate: (evidence: Record<string, unknown>) => {
+        const invocations = evidence["invocations"];
+        if (!Array.isArray(invocations) || invocations[0] === undefined) {
+          throw new Error("benchmark fixture has no invocation");
+        }
+        const invocation = mutableRecord(
+          invocations[0],
+          "benchmark invocation",
+        );
+        invocation["inputTokens"] = 200_000;
+        invocation["outputTokens"] = 1;
+        invocation["totalTokens"] = 200_001;
       },
     },
     {
