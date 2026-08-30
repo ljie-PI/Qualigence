@@ -16,6 +16,10 @@
       "QUALIGENCE_DATA_DIR"
     ]
   },
+  "commands": [
+    "CI=true corepack pnpm vitest run tests/e2e/detection-benchmark/reference-model-profile.test.ts",
+    "CI=true QUALIGENCE_LIVE_MODEL_SMOKE=true corepack pnpm vitest run tests/live/remote-model-smoke.test.ts"
+  ],
   "provider": {
     "id": "openai-compatible",
     "model": "qualigence-reference-detector-1"
@@ -24,6 +28,7 @@
     "status": "succeeded",
     "terminal": true
   },
+  "invocationCount": 1,
   "invocations": [
     {
       "invocationId": "provider-smoke-1",
@@ -33,6 +38,47 @@
       "outputTokens": 12,
       "totalTokens": 52,
       "providerRequestId": "request-redacted-1"
+    }
+  ],
+  "smokeReport": {
+    "path": "artifacts/release/v0.1.0-candidate/provider-smoke-report.json",
+    "sha256": "0152957fac2e729605b829747f7feb583766d0754fbcb5e31576ab66c1e9756f"
+  },
+  "redactionScans": [
+    {
+      "scope": "stdout",
+      "report": {
+        "path": "artifacts/release/v0.1.0-candidate/provider-redaction-stdout.json",
+        "sha256": "19ab75109b806077b75d2ca0233c10275566f0e235c35116e0a822f1dd961d03"
+      }
+    },
+    {
+      "scope": "stderr",
+      "report": {
+        "path": "artifacts/release/v0.1.0-candidate/provider-redaction-stderr.json",
+        "sha256": "623bcd9f7501fa738c0f022b2d1b8786b8f34a1ce3d2358c35841b3d372f0083"
+      }
+    },
+    {
+      "scope": "persisted-summaries",
+      "report": {
+        "path": "artifacts/release/v0.1.0-candidate/provider-redaction-summaries.json",
+        "sha256": "6eea610deea44911fc0a7b507a0a89541d0140823bf652939f886f8e4d543353"
+      }
+    },
+    {
+      "scope": "artifacts",
+      "report": {
+        "path": "artifacts/release/v0.1.0-candidate/provider-redaction-artifacts.json",
+        "sha256": "e7dc8518fddb3b9c79681bded6dab51142090428fbde62b4947870c4d31bfbc0"
+      }
+    },
+    {
+      "scope": "local-files",
+      "report": {
+        "path": "artifacts/release/v0.1.0-candidate/provider-redaction-local-files.json",
+        "sha256": "d70025738b26717930aef8626a2b4f9bd1cd0736bdf97a93a127f071357e5352"
+      }
     }
   ]
 }

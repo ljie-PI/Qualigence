@@ -57,11 +57,14 @@ binding before any decision is published.
 
 The decision covers these capabilities:
 
-1. GitHub Issue #67 ticket/PR/review/check/commit closure.
+1. GitHub Issue #67's exact ticket dependency graph plus
+   PR/review/check/commit closure.
 2. Candidate migration inventory and Freeze Report.
-3. Shared Web/Desktop Graph v1 and lossless `uia/v1` conformance.
-4. Ticket 29/30 native Windows reports.
-5. Real-provider smoke and Reference Model benchmark invocation evidence.
+3. Hash-linked command-produced Web/Desktop Graph v1 and lossless `uia/v1`
+   conformance reports.
+4. Hash-linked Ticket 29/30 native Windows reports.
+5. Real-provider smoke and complete stdout/stderr/persisted-output redaction
+   reports, plus Reference Model attempt-to-invocation evidence.
 6. Ticket 34 release manifest, exact mandatory CI archives, signed local/RDP
    Windows checklist, SBOM, provenance, and attestations.
 

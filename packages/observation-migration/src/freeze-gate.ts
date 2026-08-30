@@ -520,6 +520,33 @@ async function readEvidenceJson(
   }
 }
 
+function parseEvidenceReference(
+  value: unknown,
+  label: string,
+): GraphFreezeEvidenceReference {
+  const reference = asRecord(value, label);
+  assertKeys(reference, ["path", "sha256"], label);
+  return {
+    path: requireString(reference, "path", label),
+    sha256: requireString(reference, "sha256", label),
+  };
+}
+
+async function readBoundEvidenceRecord(
+  input: FinalizeGraphFreezeInput,
+  id: GraphFreezeEvidenceId,
+  value: unknown,
+  label: string,
+): Promise<{
+  readonly reference: GraphFreezeEvidenceReference;
+  readonly record: Record<string, unknown>;
+}> {
+  const reference = parseEvidenceReference(value, `${label} reference`);
+  const record = asRecord(await readEvidenceJson(input, id, reference), label);
+  assertBinding(record, input, label);
+  return { reference, record };
+}
+
 function validateCandidateMigrationEvidence(
   value: unknown,
   input: FinalizeGraphFreezeInput,
@@ -814,27 +841,42 @@ function assertStringArray(
   return values;
 }
 
-function validateConformanceTarget(
+async function validateConformanceTarget(
   value: unknown,
   label: string,
   desktop: boolean,
-): void {
-  const target = asRecord(value, label);
+  input: FinalizeGraphFreezeInput,
+): Promise<GraphFreezeEvidenceReference> {
+  const { reference, record: target } = await readBoundEvidenceRecord(
+    input,
+    "graph-conformance",
+    value,
+    `${label} report`,
+  );
   assertKeys(
     target,
     [
-      "status",
       "schemaVersion",
+      "repository",
+      "version",
+      "commit",
+      "generatedAt",
+      "evidenceClass",
+      "target",
+      "status",
+      "graphSchemaVersion",
       "sharedCoreFields",
       "command",
-      "artifactRefs",
       ...(desktop ? ["extensionVersion", "extensionFidelity"] : []),
     ],
     label,
   );
   if (
+    target["schemaVersion"] !==
+      "qualigence-graph-conformance-target-report/v1" ||
+    target["target"] !== (desktop ? "desktop" : "web") ||
     target["status"] !== "passed" ||
-    target["schemaVersion"] !== OBSERVATION_GRAPH_V1_VERSION
+    target["graphSchemaVersion"] !== OBSERVATION_GRAPH_V1_VERSION
   ) {
     throw new EvidenceValidationError(
       "GraphConformanceInvalid",
@@ -844,8 +886,15 @@ function validateConformanceTarget(
   assertStringArray(target["sharedCoreFields"], `${label}.sharedCoreFields`, {
     exact: REQUIRED_SHARED_CORE_FIELDS,
   });
-  requireString(target, "command", label);
-  assertStringArray(target["artifactRefs"], `${label}.artifactRefs`);
+  const expectedCommand = desktop
+    ? "corepack pnpm vitest run tests/conformance/observation/windows-uia.test.ts tests/component/windows-uia"
+    : "corepack pnpm vitest run tests/conformance/observation tests/e2e/web-execution/graph-v1-producer.test.ts";
+  if (target["command"] !== expectedCommand) {
+    throw new EvidenceValidationError(
+      "GraphConformanceInvalid",
+      `${label} does not record the required conformance command`,
+    );
+  }
   if (
     desktop &&
     (target["extensionVersion"] !== "uia/v1" ||
@@ -856,12 +905,13 @@ function validateConformanceTarget(
       "Desktop conformance must preserve uia/v1 losslessly",
     );
   }
+  return reference;
 }
 
-function validateGraphConformanceEvidence(
+async function validateGraphConformanceEvidence(
   value: unknown,
   input: FinalizeGraphFreezeInput,
-): void {
+): Promise<readonly GraphFreezeEvidenceReference[]> {
   const evidence = asRecord(value, "Graph conformance evidence");
   assertKeys(
     evidence,
@@ -887,22 +937,43 @@ function validateGraphConformanceEvidence(
     );
   }
   assertBinding(evidence, input, "Graph conformance evidence");
-  validateConformanceTarget(evidence["web"], "Graph conformance web", false);
-  validateConformanceTarget(
+  const webReference = await validateConformanceTarget(
+    evidence["web"],
+    "Graph conformance web",
+    false,
+    input,
+  );
+  const desktopReference = await validateConformanceTarget(
     evidence["desktop"],
     "Graph conformance desktop",
     true,
+    input,
   );
-  const negotiation = asRecord(
-    evidence["capabilityNegotiation"],
-    "Graph capability negotiation",
-  );
+  const { reference: negotiationReference, record: negotiation } =
+    await readBoundEvidenceRecord(
+      input,
+      "graph-conformance",
+      evidence["capabilityNegotiation"],
+      "Graph capability negotiation report",
+    );
   assertKeys(
     negotiation,
-    ["status", "incompatibleGraphMajor", "incompatibleExtensionMajor"],
+    [
+      "schemaVersion",
+      "repository",
+      "version",
+      "commit",
+      "generatedAt",
+      "evidenceClass",
+      "status",
+      "incompatibleGraphMajor",
+      "incompatibleExtensionMajor",
+    ],
     "Graph capability negotiation",
   );
   if (
+    negotiation["schemaVersion"] !==
+      "qualigence-graph-capability-negotiation-report/v1" ||
     negotiation["status"] !== "passed" ||
     negotiation["incompatibleGraphMajor"] !== "rejected" ||
     negotiation["incompatibleExtensionMajor"] !== "rejected"
@@ -912,17 +983,39 @@ function validateGraphConformanceEvidence(
       "incompatible Graph and extension majors must be rejected",
     );
   }
+  const references = [webReference, desktopReference, negotiationReference];
+  if (new Set(references.map((reference) => reference.path)).size !== 3) {
+    throw new EvidenceValidationError(
+      "EvidenceDuplicate",
+      "Graph conformance reports must use distinct evidence paths",
+    );
+  }
+  return references;
 }
 
 const REQUIRED_NATIVE_REPORTS = new Map([
-  ["ticket-29-named-pipe", "qualigence-windows-named-pipe-authority/v1"],
-  ["ticket-30-uia-companion", "qualigence-windows-uia-daemon-harness/v1"],
+  [
+    "ticket-29-named-pipe",
+    {
+      schemaVersion: "qualigence-windows-named-pipe-authority/v1",
+      command:
+        "corepack pnpm vitest run tests/e2e/windows/named-pipe-authority.test.ts",
+    },
+  ],
+  [
+    "ticket-30-uia-companion",
+    {
+      schemaVersion: "qualigence-windows-uia-daemon-harness/v1",
+      command:
+        "corepack pnpm vitest run tests/e2e/windows/companion-daemon.test.ts",
+    },
+  ],
 ]);
 
-function validateNativeReportsEvidence(
+async function validateNativeReportsEvidence(
   value: unknown,
   input: FinalizeGraphFreezeInput,
-): void {
+): Promise<readonly GraphFreezeEvidenceReference[]> {
   const evidence = asRecord(value, "native reports evidence");
   assertKeys(
     evidence,
@@ -952,21 +1045,15 @@ function validateNativeReportsEvidence(
     );
   }
   const seen = new Set<string>();
+  const references: GraphFreezeEvidenceReference[] = [];
   for (const [index, value] of reports.entries()) {
-    const report = asRecord(value, `native report ${index}`);
-    assertKeys(
-      report,
-      [
-        "name",
-        "reportSchemaVersion",
-        "environment",
-        "status",
-        "command",
-        "artifactRefs",
-      ],
-      `native report ${index}`,
+    const entry = asRecord(value, `native report reference ${index}`);
+    assertKeys(entry, ["name", "report"], `native report reference ${index}`);
+    const name = requireString(
+      entry,
+      "name",
+      `native report reference ${index}`,
     );
-    const name = requireString(report, "name", `native report ${index}`);
     if (seen.has(name)) {
       throw new EvidenceValidationError(
         "EvidenceDuplicate",
@@ -974,21 +1061,42 @@ function validateNativeReportsEvidence(
       );
     }
     seen.add(name);
+    const { reference, record: report } = await readBoundEvidenceRecord(
+      input,
+      "native-reports",
+      entry["report"],
+      `native report ${name}`,
+    );
+    assertKeys(
+      report,
+      [
+        "schemaVersion",
+        "repository",
+        "version",
+        "commit",
+        "generatedAt",
+        "evidenceClass",
+        "name",
+        "environment",
+        "status",
+        "command",
+      ],
+      `native report ${name}`,
+    );
+    const expected = REQUIRED_NATIVE_REPORTS.get(name);
     if (
-      REQUIRED_NATIVE_REPORTS.get(name) !== report["reportSchemaVersion"] ||
+      expected?.schemaVersion !== report["schemaVersion"] ||
+      report["name"] !== name ||
       report["environment"] !== "windows-11-native" ||
-      report["status"] !== "passed"
+      report["status"] !== "passed" ||
+      report["command"] !== expected?.command
     ) {
       throw new EvidenceValidationError(
         "NativeReportInvalid",
         `${name} is not a passing native Windows 11 report`,
       );
     }
-    requireString(report, "command", `native report ${name}`);
-    assertStringArray(
-      report["artifactRefs"],
-      `native report ${name}.artifactRefs`,
-    );
+    references.push(reference);
   }
   for (const name of REQUIRED_NATIVE_REPORTS.keys()) {
     if (!seen.has(name)) {
@@ -998,6 +1106,16 @@ function validateNativeReportsEvidence(
       );
     }
   }
+  if (
+    new Set(references.map((reference) => reference.path)).size !==
+    references.length
+  ) {
+    throw new EvidenceValidationError(
+      "EvidenceDuplicate",
+      "native reports must use distinct evidence paths",
+    );
+  }
+  return references;
 }
 
 const REQUIRED_CLOSURE_ISSUES = [
@@ -1005,6 +1123,44 @@ const REQUIRED_CLOSURE_ISSUES = [
   150, 152, 153, 156, 149, 148, 151, 146, 154, 163, 159, 160, 167, 168, 161,
   164, 158, 166, 169, 165,
 ] as const;
+
+const REQUIRED_CLOSURE_DEPENDENCIES: readonly (readonly number[])[] = [
+  [],
+  [1],
+  [2, 36],
+  [3, 38],
+  [4],
+  [3],
+  [5, 6, 20],
+  [7],
+  [8],
+  [9],
+  [10, 16],
+  [11],
+  [12],
+  [13],
+  [14],
+  [1],
+  [16],
+  [17, 37],
+  [18],
+  [6, 19],
+  [20],
+  [19],
+  [22],
+  [21, 23],
+  [24],
+  [25],
+  [26],
+  [27],
+  [28],
+  [29],
+  [],
+  [],
+  [32],
+  [33],
+  [34],
+];
 
 const REQUIRED_REMEDIATION_ISSUES = [
   162, 176, 172, 170, 177, 174, 173, 175, 178, 180, 179, 171,
@@ -1016,6 +1172,19 @@ const REQUIRED_PROVIDER_VARIABLES = [
   "QUALIGENCE_LIVE_MODEL_SMOKE",
   "QUALIGENCE_MODEL_NAME",
   "QUALIGENCE_DATA_DIR",
+] as const;
+
+const REQUIRED_PROVIDER_COMMANDS = [
+  "CI=true corepack pnpm vitest run tests/e2e/detection-benchmark/reference-model-profile.test.ts",
+  "CI=true QUALIGENCE_LIVE_MODEL_SMOKE=true corepack pnpm vitest run tests/live/remote-model-smoke.test.ts",
+] as const;
+
+const REQUIRED_PROVIDER_REDACTION_SCOPES = [
+  "stdout",
+  "stderr",
+  "persisted-summaries",
+  "artifacts",
+  "local-files",
 ] as const;
 
 function requireSafeInteger(
@@ -1379,7 +1548,8 @@ function validateGithubClosureEvidence(
         typeof dependency !== "number" ||
         !Number.isSafeInteger(dependency) ||
         dependency < 1 ||
-        dependency >= legacyTicket
+        dependency > 47 ||
+        dependency === legacyTicket
       ) {
         throw new EvidenceValidationError(
           "GithubTicketDependencyInvalid",
@@ -1388,16 +1558,19 @@ function validateGithubClosureEvidence(
       }
       return dependency;
     });
-    if (legacyTicket > 1 && blockedBy.length === 0) {
+    const expectedDependencies =
+      REQUIRED_CLOSURE_DEPENDENCIES[legacyTicket - 1];
+    if (
+      expectedDependencies === undefined ||
+      blockedBy.length !== expectedDependencies.length ||
+      expectedDependencies.some(
+        (dependency) => !blockedBy.includes(dependency),
+      ) ||
+      new Set(blockedBy).size !== blockedBy.length
+    ) {
       throw new EvidenceValidationError(
         "GithubTicketDependencyInvalid",
-        `legacy Ticket ${legacyTicket} has no recorded dependency`,
-      );
-    }
-    if (new Set(blockedBy).size !== blockedBy.length) {
-      throw new EvidenceValidationError(
-        "GithubTicketDependencyInvalid",
-        `legacy Ticket ${legacyTicket} has duplicate dependencies`,
+        `legacy Ticket ${legacyTicket} does not match the authoritative dependency graph`,
       );
     }
     if (issue["status"] === "resolved") {
@@ -1606,10 +1779,10 @@ function requirePositiveInteger(
   return value;
 }
 
-function validateProviderEvidence(
+async function validateProviderEvidence(
   value: unknown,
   input: FinalizeGraphFreezeInput,
-): void {
+): Promise<readonly GraphFreezeEvidenceReference[]> {
   const evidence = asRecord(value, "provider evidence");
   assertKeys(
     evidence,
@@ -1621,9 +1794,13 @@ function validateProviderEvidence(
       "generatedAt",
       "evidenceClass",
       "environment",
+      "commands",
       "provider",
       "result",
+      "invocationCount",
       "invocations",
+      "smokeReport",
+      "redactionScans",
     ],
     "provider evidence",
   );
@@ -1658,6 +1835,9 @@ function validateProviderEvidence(
     "provider evidence.environment.requiredVariables",
     { exact: REQUIRED_PROVIDER_VARIABLES },
   );
+  assertStringArray(evidence["commands"], "provider evidence.commands", {
+    exact: REQUIRED_PROVIDER_COMMANDS,
+  });
 
   const provider = asRecord(evidence["provider"], "provider evidence.provider");
   assertKeys(provider, ["id", "model"], "provider evidence.provider");
@@ -1682,6 +1862,12 @@ function validateProviderEvidence(
     throw new EvidenceValidationError(
       "ProviderInvocationMissing",
       "provider evidence must contain at least one invocation",
+    );
+  }
+  if (evidence["invocationCount"] !== invocations.length) {
+    throw new EvidenceValidationError(
+      "ProviderInvocationInvalid",
+      "provider evidence invocationCount must match its invocation records",
     );
   }
   const seen = new Set<string>();
@@ -1736,6 +1922,121 @@ function validateProviderEvidence(
     }
     requireString(invocation, "providerRequestId", label);
   }
+
+  const { reference: smokeReference, record: smokeReport } =
+    await readBoundEvidenceRecord(
+      input,
+      "provider",
+      evidence["smokeReport"],
+      "provider smoke report",
+    );
+  assertKeys(
+    smokeReport,
+    [
+      "schemaVersion",
+      "repository",
+      "version",
+      "commit",
+      "generatedAt",
+      "evidenceClass",
+      "provider",
+      "result",
+      "invocationCount",
+      "invocations",
+    ],
+    "provider smoke report",
+  );
+  if (
+    smokeReport["schemaVersion"] !== "qualigence-provider-smoke-report/v1" ||
+    canonicalJson(smokeReport["provider"]) !== canonicalJson(provider) ||
+    canonicalJson(smokeReport["result"]) !== canonicalJson(result) ||
+    smokeReport["invocationCount"] !== invocations.length ||
+    canonicalJson(smokeReport["invocations"]) !== canonicalJson(invocations)
+  ) {
+    throw new EvidenceValidationError(
+      "ProviderReportInvalid",
+      "provider smoke report does not bind the recorded identity, result, and invocations",
+    );
+  }
+
+  const scanEntries = requireArray(
+    evidence,
+    "redactionScans",
+    "provider evidence",
+  );
+  if (scanEntries.length !== REQUIRED_PROVIDER_REDACTION_SCOPES.length) {
+    throw new EvidenceValidationError(
+      "ProviderRedactionEvidenceInvalid",
+      "provider evidence must include every required redaction scan",
+    );
+  }
+  const references = [smokeReference];
+  const seenScopes = new Set<string>();
+  for (const [index, value] of scanEntries.entries()) {
+    const entry = asRecord(value, `provider redaction scan ${index}`);
+    assertKeys(entry, ["scope", "report"], `provider redaction scan ${index}`);
+    const scope = requireString(
+      entry,
+      "scope",
+      `provider redaction scan ${index}`,
+    );
+    if (
+      !REQUIRED_PROVIDER_REDACTION_SCOPES.includes(
+        scope as (typeof REQUIRED_PROVIDER_REDACTION_SCOPES)[number],
+      ) ||
+      seenScopes.has(scope)
+    ) {
+      throw new EvidenceValidationError(
+        "ProviderRedactionEvidenceInvalid",
+        `provider redaction scan scope ${scope} is unexpected or duplicated`,
+      );
+    }
+    seenScopes.add(scope);
+    const { reference, record: scan } = await readBoundEvidenceRecord(
+      input,
+      "provider",
+      entry["report"],
+      `provider ${scope} redaction report`,
+    );
+    assertKeys(
+      scan,
+      [
+        "schemaVersion",
+        "repository",
+        "version",
+        "commit",
+        "generatedAt",
+        "evidenceClass",
+        "scope",
+        "status",
+        "scannedArtifactSha256",
+      ],
+      `provider ${scope} redaction report`,
+    );
+    if (
+      scan["schemaVersion"] !== "qualigence-provider-redaction-scan/v1" ||
+      scan["scope"] !== scope ||
+      scan["status"] !== "clean" ||
+      typeof scan["scannedArtifactSha256"] !== "string" ||
+      !/^[a-f0-9]{64}$/u.test(scan["scannedArtifactSha256"])
+    ) {
+      throw new EvidenceValidationError(
+        "ProviderRedactionEvidenceInvalid",
+        `provider ${scope} redaction report is not clean and hash-bound`,
+      );
+    }
+    references.push(reference);
+  }
+  if (
+    new Set(references.map((reference) => reference.path)).size !==
+    references.length
+  ) {
+    throw new EvidenceValidationError(
+      "EvidenceDuplicate",
+      "provider reports must use distinct evidence paths",
+    );
+  }
+  return references;
 }
 
 function validateBenchmarkEvidence(
@@ -2114,10 +2415,17 @@ function validateBenchmarkEvidence(
     "benchmark evidence",
   );
   const invocationIds = new Set<string>();
+  const invocationAttempts = new Map<string, string>();
   for (const [index, value] of invocations.entries()) {
     const label = `benchmark invocation ${index}`;
     const invocation = asRecord(value, label);
+    assertKeys(
+      invocation,
+      ["invocationId", "attemptId", "status", "usageStatus"],
+      label,
+    );
     const invocationId = requireString(invocation, "invocationId", label);
+    const invocationAttemptId = requireString(invocation, "attemptId", label);
     if (
       invocationIds.has(invocationId) ||
       invocation["status"] !== "succeeded" ||
@@ -2131,6 +2439,7 @@ function validateBenchmarkEvidence(
       );
     }
     invocationIds.add(invocationId);
+    invocationAttempts.set(invocationId, invocationAttemptId);
   }
 
   const attempts = requireArray(evidence, "attempts", "benchmark evidence");
@@ -2151,6 +2460,8 @@ function validateBenchmarkEvidence(
   const seenSlots = new Set<string>();
   const seenAttemptIds = new Set<string>();
   const seenBindings = new Set<string>();
+  const seenInvocationIds = new Set<string>();
+  const runId = sha256Hex(String(report["inputSha256"]));
   const parsedAttempts: {
     readonly scenarioId: string;
     readonly repetition: number;
@@ -2205,13 +2516,17 @@ function validateBenchmarkEvidence(
       attempt["profileSha256"] !== profileHash ||
       !bindingHashes.includes(bindingSha256) ||
       seenBindings.has(bindingSha256) ||
+      attemptId !== `${runId}:${bindingSha256}` ||
       repetition > repetitions ||
       seenSlots.has(slot) ||
       seenAttemptIds.has(attemptId) ||
       !reportAttemptIds.includes(attemptId) ||
       attemptInvocationIds.length === 0 ||
       attemptInvocationIds.some(
-        (invocationId) => !invocationIds.has(invocationId),
+        (invocationId) =>
+          !invocationIds.has(invocationId) ||
+          invocationAttempts.get(invocationId) !== attemptId ||
+          seenInvocationIds.has(invocationId),
       )
     ) {
       throw new EvidenceValidationError(
@@ -2222,7 +2537,16 @@ function validateBenchmarkEvidence(
     seenSlots.add(slot);
     seenAttemptIds.add(attemptId);
     seenBindings.add(bindingSha256);
+    for (const invocationId of attemptInvocationIds) {
+      seenInvocationIds.add(invocationId);
+    }
     parsedAttempts.push({ scenarioId, repetition, findings });
+  }
+  if (seenInvocationIds.size !== invocationIds.size) {
+    throw new EvidenceValidationError(
+      "BenchmarkInvocationInvalid",
+      "every persisted benchmark invocation must bind exactly one attempt",
+    );
   }
 
   const attemptsByScenario = new Map<
@@ -2834,7 +3158,13 @@ async function evaluateReference(
   capabilities: GraphFreezeCapabilityDecision[],
   id: GraphFreezeEvidenceId,
   reference: GraphFreezeEvidenceReference | undefined,
-  validate: (value: unknown, input: FinalizeGraphFreezeInput) => void,
+  validate: (
+    value: unknown,
+    input: FinalizeGraphFreezeInput,
+  ) =>
+    | void
+    | readonly GraphFreezeEvidenceReference[]
+    | Promise<void | readonly GraphFreezeEvidenceReference[]>,
 ): Promise<void> {
   if (reference === undefined) {
     return;
@@ -2849,10 +3179,10 @@ async function evaluateReference(
   }
   try {
     const value = await readEvidenceJson(input, id, reference);
-    validate(value, input);
+    const nestedEvidence = await validate(value, input);
     replaceCapability(capabilities, id, {
       status: "verified",
-      evidence: [reference],
+      evidence: [reference, ...(nestedEvidence ?? [])],
       blockers: [],
     });
   } catch (error) {

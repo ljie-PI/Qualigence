@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "qualigence-provider-redaction-scan/v1",
+  "repository": "ljie-PI/Qualigence",
+  "version": "v0.1.0-candidate",
+  "commit": "aca8a487268ef6baab644ff47401efc85b1d1a26",
+  "generatedAt": "2026-08-30T07:29:00.000Z",
+  "evidenceClass": "real",
+  "scope": "stderr",
+  "status": "clean",
+  "scannedArtifactSha256": "2222222222222222222222222222222222222222222222222222222222222222"
+}

@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "qualigence-graph-capability-negotiation-report/v1",
+  "repository": "ljie-PI/Qualigence",
+  "version": "v0.1.0-candidate",
+  "commit": "aca8a487268ef6baab644ff47401efc85b1d1a26",
+  "generatedAt": "2026-08-30T07:09:00.000Z",
+  "evidenceClass": "real",
+  "status": "passed",
+  "incompatibleGraphMajor": "rejected",
+  "incompatibleExtensionMajor": "rejected"
+}

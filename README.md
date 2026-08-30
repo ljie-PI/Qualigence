@@ -135,8 +135,9 @@ freeze evidence; missing evidence is a blocked release, never a synthetic pass.
 `@qualigence/observation-migration` exposes
 `finalizeGraphFreezeFromEvidence(...)` for the terminal Graph v1 decision. The
 finalizer accepts only repository-relative, version-confined evidence paths with
-caller-pinned SHA-256 values, validates the serialized GitHub closure, migration,
-Web/Desktop conformance, native Windows, real-provider, Reference Model benchmark,
+caller-pinned SHA-256 values. It validates the canonical GitHub dependency graph,
+hash-linked command-produced Web/Desktop and native reports, Ticket 48's provider
+smoke/redaction reports, the Reference Model attempt/invocation bindings, migration,
 and Ticket 34 release records, then atomically writes
 `artifacts/release/<version>/graph-freeze-decision.json`. Each capability records
 its production wiring, verification command, selected commit, accepted evidence,

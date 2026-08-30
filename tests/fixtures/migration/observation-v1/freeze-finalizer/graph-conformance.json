@@ -6,24 +6,15 @@
   "generatedAt": "2026-08-30T07:10:00.000Z",
   "evidenceClass": "real",
   "web": {
-    "status": "passed",
-    "schemaVersion": "observation-graph/v1",
-    "sharedCoreFields": ["role", "name", "value", "state", "relations"],
-    "command": "corepack pnpm vitest run tests/conformance/observation tests/e2e/web-execution/graph-v1-producer.test.ts",
-    "artifactRefs": ["gate-linux:graph-v1"]
+    "path": "artifacts/release/v0.1.0-candidate/graph-web-report.json",
+    "sha256": "905eaea9d0548e6affe55ac7b5647583f9a511d4e059732ee82f536a25541fb6"
   },
   "desktop": {
-    "status": "passed",
-    "schemaVersion": "observation-graph/v1",
-    "extensionVersion": "uia/v1",
-    "extensionFidelity": "lossless",
-    "sharedCoreFields": ["role", "name", "value", "state", "relations"],
-    "command": "corepack pnpm vitest run tests/conformance/observation/windows-uia.test.ts tests/component/windows-uia",
-    "artifactRefs": ["gate-windows-rust:uia-v1"]
+    "path": "artifacts/release/v0.1.0-candidate/graph-desktop-report.json",
+    "sha256": "c1bde8bf3353d6046987f56ce28fac2cf18308f973b77d358b1875c3c9bf75f6"
   },
   "capabilityNegotiation": {
-    "status": "passed",
-    "incompatibleGraphMajor": "rejected",
-    "incompatibleExtensionMajor": "rejected"
+    "path": "artifacts/release/v0.1.0-candidate/graph-negotiation-report.json",
+    "sha256": "7c99433f6ca67b9e50225611f94d8570868f25e2db1af550cf8f3878218d7f93"
   }
 }

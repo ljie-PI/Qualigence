@@ -8,21 +8,17 @@
   "reports": [
     {
       "name": "ticket-29-named-pipe",
-      "reportSchemaVersion": "qualigence-windows-named-pipe-authority/v1",
-      "environment": "windows-11-native",
-      "status": "passed",
-      "command": "corepack pnpm vitest run tests/e2e/windows/named-pipe-authority.test.ts",
-      "artifactRefs": ["gate-windows-rust:named-pipe-authority"]
+      "report": {
+        "path": "artifacts/release/v0.1.0-candidate/native-ticket-29-report.json",
+        "sha256": "43e752490e2a8987c1d3d3ef274f721a5bc92d96a85c400e6b9e67f935ab393d"
+      }
     },
     {
       "name": "ticket-30-uia-companion",
-      "reportSchemaVersion": "qualigence-windows-uia-daemon-harness/v1",
-      "environment": "windows-11-native",
-      "status": "passed",
-      "command": "corepack pnpm vitest run tests/e2e/windows/companion-daemon.test.ts",
-      "artifactRefs": [
-        "gate-windows-rust:windows-uia-daemon-harness-evidence.json"
-      ]
+      "report": {
+        "path": "artifacts/release/v0.1.0-candidate/native-ticket-30-report.json",
+        "sha256": "0304b894aed3f4257c90b17f810890bf2767e1f991dc6a81b558be9a825bd97f"
+      }
     }
   ]
 }

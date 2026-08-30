@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "qualigence-windows-uia-daemon-harness/v1",
+  "repository": "ljie-PI/Qualigence",
+  "version": "v0.1.0-candidate",
+  "commit": "aca8a487268ef6baab644ff47401efc85b1d1a26",
+  "generatedAt": "2026-08-30T07:19:00.000Z",
+  "evidenceClass": "real",
+  "name": "ticket-30-uia-companion",
+  "environment": "windows-11-native",
+  "status": "passed",
+  "command": "corepack pnpm vitest run tests/e2e/windows/companion-daemon.test.ts"
+}

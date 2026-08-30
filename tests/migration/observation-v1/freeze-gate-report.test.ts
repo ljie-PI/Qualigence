@@ -43,9 +43,65 @@ const CLOSURE_ISSUES = [
   150, 152, 153, 156, 149, 148, 151, 146, 154, 163, 159, 160, 167, 168, 161,
   164, 158, 166, 169, 165,
 ] as const;
+const CLOSURE_DEPENDENCIES = [
+  [],
+  [1],
+  [2, 36],
+  [3, 38],
+  [4],
+  [3],
+  [5, 6, 20],
+  [7],
+  [8],
+  [9],
+  [10, 16],
+  [11],
+  [12],
+  [13],
+  [14],
+  [1],
+  [16],
+  [17, 37],
+  [18],
+  [6, 19],
+  [20],
+  [19],
+  [22],
+  [21, 23],
+  [24],
+  [25],
+  [26],
+  [27],
+  [28],
+  [29],
+  [],
+  [],
+  [32],
+  [33],
+  [34],
+] as const;
 const REMEDIATION_ISSUES = [
   162, 176, 172, 170, 177, 174, 173, 175, 178, 180, 179, 171,
 ] as const;
+const NESTED_EVIDENCE_FIXTURES: Readonly<Record<string, readonly string[]>> = {
+  "graph-conformance.json": [
+    "graph-web-report.json",
+    "graph-desktop-report.json",
+    "graph-negotiation-report.json",
+  ],
+  "native-reports.json": [
+    "native-ticket-29-report.json",
+    "native-ticket-30-report.json",
+  ],
+  "provider.json": [
+    "provider-smoke-report.json",
+    "provider-redaction-stdout.json",
+    "provider-redaction-stderr.json",
+    "provider-redaction-summaries.json",
+    "provider-redaction-artifacts.json",
+    "provider-redaction-local-files.json",
+  ],
+};
 
 function finalizerInput(
   repositoryRoot: string,
@@ -111,6 +167,21 @@ function closurePullRequest(legacyTicket: number, pullRequestNumber: number) {
 function githubClosureFixture() {
   const tickets = CLOSURE_ISSUES.map((issueNumber, index) => {
     const legacyTicket = index + 1;
+    if (legacyTicket === 31) {
+      return {
+        legacyTicket,
+        issue: {
+          number: issueNumber,
+          parentIssue: 67,
+          state: "closed",
+          status: "superseded",
+          todoTotal: 10,
+          todoCompleted: 0,
+          blockedBy: CLOSURE_DEPENDENCIES[index],
+          supersededBy: 48,
+        },
+      };
+    }
     return {
       legacyTicket,
       issue: {
@@ -120,11 +191,16 @@ function githubClosureFixture() {
         status: "resolved",
         todoTotal: 4,
         todoCompleted: 4,
-        blockedBy: legacyTicket === 1 ? [] : [legacyTicket - 1],
+        blockedBy: CLOSURE_DEPENDENCIES[index],
       },
       pullRequest: closurePullRequest(legacyTicket, 300 + legacyTicket),
     };
   });
+  const closurePullRequests = tickets.flatMap((item) =>
+    "pullRequest" in item && item.pullRequest !== undefined
+      ? [item.pullRequest]
+      : [],
+  );
   const remediation = REMEDIATION_ISSUES.map((issueNumber, index) => {
     const legacyTicket = index + 36;
     if (legacyTicket === 46) {
@@ -187,19 +263,19 @@ function githubClosureFixture() {
       {
         sha: FINALIZER_COMMIT,
         parents: [
-          ...tickets.map((ticket) => ticket.pullRequest.mergeCommit),
+          ...closurePullRequests.map((pullRequest) => pullRequest.mergeCommit),
           ...remediationPullRequests.map(
             (pullRequest) => pullRequest.mergeCommit,
           ),
         ],
       },
-      ...tickets.flatMap((ticket) => [
+      ...closurePullRequests.flatMap((pullRequest) => [
         {
-          sha: ticket.pullRequest.mergeCommit,
-          parents: [ticket.pullRequest.remoteHead],
+          sha: pullRequest.mergeCommit,
+          parents: [pullRequest.remoteHead],
         },
         {
-          sha: ticket.pullRequest.remoteHead,
+          sha: pullRequest.remoteHead,
           parents: [],
         },
       ]),
@@ -315,12 +391,55 @@ async function writeEvidenceObject(
   version: string,
   filename: string,
   value: unknown,
+  copyDependencies = true,
+  refreshDependencyHashes = copyDependencies,
 ) {
   const path = `artifacts/release/${version}/${filename}`;
-  const bytes = Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8");
+  const materializedValue = structuredClone(value);
   await mkdir(join(repositoryRoot, "artifacts", "release", version), {
     recursive: true,
   });
+  const dependencyHashes = new Map<string, string>();
+  if (copyDependencies) {
+    for (const dependency of NESTED_EVIDENCE_FIXTURES[filename] ?? []) {
+      const dependencyBytes = await readFile(
+        join(FINALIZER_FIXTURE_ROOT, dependency),
+      );
+      await writeFile(
+        join(repositoryRoot, "artifacts", "release", version, dependency),
+        dependencyBytes,
+      );
+      dependencyHashes.set(dependency, sha256(dependencyBytes));
+    }
+  }
+  if (refreshDependencyHashes) {
+    const refresh = (candidate: unknown): void => {
+      if (Array.isArray(candidate)) {
+        candidate.forEach(refresh);
+        return;
+      }
+      if (candidate === null || typeof candidate !== "object") {
+        return;
+      }
+      const record = candidate as Record<string, unknown>;
+      if (typeof record["path"] === "string") {
+        const dependency = record["path"].split("/").at(-1);
+        const hash =
+          dependency === undefined
+            ? undefined
+            : dependencyHashes.get(dependency);
+        if (hash !== undefined) {
+          record["sha256"] = hash;
+        }
+      }
+      Object.values(record).forEach(refresh);
+    };
+    refresh(materializedValue);
+  }
+  const bytes = Buffer.from(
+    `${JSON.stringify(materializedValue, null, 2)}\n`,
+    "utf8",
+  );
   await writeFile(join(repositoryRoot, ...path.split("/")), bytes);
   return {
     path,
@@ -873,13 +992,12 @@ describe("finalizeGraphFreezeFromEvidence", () => {
       ["graphConformance", "graph-conformance.json"],
       ["nativeReports", "native-reports.json"],
     ] as const) {
-      const bytes = await readFile(join(FINALIZER_FIXTURE_ROOT, filename));
-      const path = `artifacts/release/${version}/${filename}`;
-      await writeFile(join(repositoryRoot, ...path.split("/")), bytes);
-      evidence[key] = {
-        path,
-        sha256: createHash("sha256").update(bytes).digest("hex"),
-      };
+      evidence[key] = await writeEvidenceObject(
+        repositoryRoot,
+        version,
+        filename,
+        await readFixtureObject(filename),
+      );
     }
 
     const result = await finalizeGraphFreezeFromEvidence({
@@ -896,6 +1014,112 @@ describe("finalizeGraphFreezeFromEvidence", () => {
         result.decision.capabilities.find((capability) => capability.id === id),
       ).toMatchObject({ status: "verified", blockers: [] });
     }
+  });
+
+  it("rejects an unsupported Graph schema major in the hashed target report", async () => {
+    const repositoryRoot = await mkdtemp(
+      join(tmpdir(), "qualigence-freeze-graph-major-"),
+    );
+    fixtureRoots.push(repositoryRoot);
+    const version = "v0.1.0-candidate";
+    const webReport = await readFixtureObject("graph-web-report.json");
+    webReport["graphSchemaVersion"] = "observation-graph/v2";
+    const webReference = await writeEvidenceObject(
+      repositoryRoot,
+      version,
+      "graph-web-report.json",
+      webReport,
+    );
+    const graphEvidence = await readFixtureObject("graph-conformance.json");
+    graphEvidence["web"] = webReference;
+    const reference = await writeEvidenceObject(
+      repositoryRoot,
+      version,
+      "graph-conformance.json",
+      graphEvidence,
+      false,
+    );
+
+    const result = await finalizeGraphFreezeFromEvidence(
+      finalizerInput(repositoryRoot, {
+        evidence: { graphConformance: reference },
+      }),
+    );
+
+    expect(result.decision.blockingReasons).toContain(
+      "GraphConformanceInvalid: graph-conformance",
+    );
+  });
+
+  it("rejects a Graph target index whose report hash does not match bytes", async () => {
+    const repositoryRoot = await mkdtemp(
+      join(tmpdir(), "qualigence-freeze-graph-report-hash-"),
+    );
+    fixtureRoots.push(repositoryRoot);
+    const graphEvidence = await readFixtureObject("graph-conformance.json");
+    mutableRecord(graphEvidence["web"], "Graph web report reference")[
+      "sha256"
+    ] = "f".repeat(64);
+    const reference = await writeEvidenceObject(
+      repositoryRoot,
+      "v0.1.0-candidate",
+      "graph-conformance.json",
+      graphEvidence,
+      true,
+      false,
+    );
+
+    const result = await finalizeGraphFreezeFromEvidence(
+      finalizerInput(repositoryRoot, {
+        evidence: { graphConformance: reference },
+      }),
+    );
+
+    expect(result.decision.blockingReasons).toContain(
+      "EvidenceHashMismatch: graph-conformance",
+    );
+  });
+
+  it("rejects a portable substitute in the hashed native report", async () => {
+    const repositoryRoot = await mkdtemp(
+      join(tmpdir(), "qualigence-freeze-native-portable-"),
+    );
+    fixtureRoots.push(repositoryRoot);
+    const version = "v0.1.0-candidate";
+    const nativeReport = await readFixtureObject(
+      "native-ticket-29-report.json",
+    );
+    nativeReport["environment"] = "portable-test";
+    const nativeReference = await writeEvidenceObject(
+      repositoryRoot,
+      version,
+      "native-ticket-29-report.json",
+      nativeReport,
+    );
+    const nativeEvidence = await readFixtureObject("native-reports.json");
+    const reports = nativeEvidence["reports"];
+    if (!Array.isArray(reports) || reports[0] === undefined) {
+      throw new Error("native fixture has no report");
+    }
+    mutableRecord(reports[0], "native report reference")["report"] =
+      nativeReference;
+    const reference = await writeEvidenceObject(
+      repositoryRoot,
+      version,
+      "native-reports.json",
+      nativeEvidence,
+      false,
+    );
+
+    const result = await finalizeGraphFreezeFromEvidence(
+      finalizerInput(repositoryRoot, {
+        evidence: { nativeReports: reference },
+      }),
+    );
+
+    expect(result.decision.blockingReasons).toContain(
+      "NativeReportInvalid: native-reports",
+    );
   });
 
   it("validates the complete serialized GitHub ticket graph, merged PRs, checks, and ancestry", async () => {
@@ -949,6 +1173,36 @@ describe("finalizeGraphFreezeFromEvidence", () => {
 
     expect(result.decision.blockingReasons).toContain(
       "GithubTicketStatusInvalid: github-closure",
+    );
+  });
+
+  it("rejects a non-canonical but otherwise valid GitHub dependency edge", async () => {
+    const repositoryRoot = await mkdtemp(
+      join(tmpdir(), "qualigence-freeze-github-dependency-"),
+    );
+    fixtureRoots.push(repositoryRoot);
+    const githubClosure = githubClosureFixture();
+    const ticketThree = mutableRecord(
+      githubClosure.tickets[2],
+      "legacy Ticket 03",
+    );
+    mutableRecord(ticketThree["issue"], "legacy Ticket 03 issue")["blockedBy"] =
+      [1];
+    const reference = await writeEvidenceObject(
+      repositoryRoot,
+      "v0.1.0-candidate",
+      "github-closure.json",
+      githubClosure,
+    );
+
+    const result = await finalizeGraphFreezeFromEvidence(
+      finalizerInput(repositoryRoot, {
+        evidence: { githubClosure: reference },
+      }),
+    );
+
+    expect(result.decision.blockingReasons).toContain(
+      "GithubTicketDependencyInvalid: github-closure",
     );
   });
 
@@ -1026,16 +1280,12 @@ describe("finalizeGraphFreezeFromEvidence", () => {
       ["provider", "provider.json"],
       ["benchmark", "benchmark.json"],
     ] as const) {
-      const bytes = await readFile(join(FINALIZER_FIXTURE_ROOT, filename));
-      const path = `artifacts/release/${version}/${filename}`;
-      await mkdir(join(repositoryRoot, "artifacts", "release", version), {
-        recursive: true,
-      });
-      await writeFile(join(repositoryRoot, ...path.split("/")), bytes);
-      evidence[key] = {
-        path,
-        sha256: createHash("sha256").update(bytes).digest("hex"),
-      };
+      evidence[key] = await writeEvidenceObject(
+        repositoryRoot,
+        version,
+        filename,
+        await readFixtureObject(filename),
+      );
     }
 
     const result = await finalizeGraphFreezeFromEvidence({
@@ -1062,12 +1312,29 @@ describe("finalizeGraphFreezeFromEvidence", () => {
     const provider = await readFixtureObject("provider.json");
     mutableRecord(provider["provider"], "provider identity")["model"] =
       "different-model";
+    await writeEvidenceObject(
+      repositoryRoot,
+      "v0.1.0-candidate",
+      "provider.json",
+      await readFixtureObject("provider.json"),
+    );
+    const smokeReport = await readFixtureObject("provider-smoke-report.json");
+    mutableRecord(smokeReport["provider"], "smoke report provider identity")[
+      "model"
+    ] = "different-model";
+    provider["smokeReport"] = await writeEvidenceObject(
+      repositoryRoot,
+      "v0.1.0-candidate",
+      "provider-smoke-report.json",
+      smokeReport,
+    );
     const evidence = {
       provider: await writeEvidenceObject(
         repositoryRoot,
         "v0.1.0-candidate",
         "provider.json",
         provider,
+        false,
       ),
       benchmark: await writeEvidenceObject(
         repositoryRoot,
@@ -1113,6 +1380,88 @@ describe("finalizeGraphFreezeFromEvidence", () => {
 
     expect(result.decision.blockingReasons).toContain(
       "EvidenceSetInvalid: provider",
+    );
+  });
+
+  it("rejects failed hashed provider redaction-scan evidence", async () => {
+    const repositoryRoot = await mkdtemp(
+      join(tmpdir(), "qualigence-freeze-provider-redaction-"),
+    );
+    fixtureRoots.push(repositoryRoot);
+    const version = "v0.1.0-candidate";
+    const provider = await readFixtureObject("provider.json");
+    await writeEvidenceObject(
+      repositoryRoot,
+      version,
+      "provider.json",
+      provider,
+    );
+    const scan = await readFixtureObject("provider-redaction-stdout.json");
+    scan["status"] = "credential-found";
+    const scanReference = await writeEvidenceObject(
+      repositoryRoot,
+      version,
+      "provider-redaction-stdout.json",
+      scan,
+    );
+    const scans = provider["redactionScans"];
+    if (!Array.isArray(scans) || scans[0] === undefined) {
+      throw new Error("provider fixture has no redaction scan");
+    }
+    mutableRecord(scans[0], "provider stdout redaction scan")["report"] =
+      scanReference;
+    const reference = await writeEvidenceObject(
+      repositoryRoot,
+      version,
+      "provider.json",
+      provider,
+      false,
+    );
+
+    const result = await finalizeGraphFreezeFromEvidence(
+      finalizerInput(repositoryRoot, {
+        evidence: { provider: reference },
+      }),
+    );
+
+    expect(result.decision.blockingReasons).toContain(
+      "ProviderRedactionEvidenceInvalid: provider",
+    );
+  });
+
+  it("rejects a benchmark invocation reused by another attempt", async () => {
+    const repositoryRoot = await mkdtemp(
+      join(tmpdir(), "qualigence-freeze-benchmark-invocation-reuse-"),
+    );
+    fixtureRoots.push(repositoryRoot);
+    const benchmark = await readFixtureObject("benchmark.json");
+    const attempts = benchmark["attempts"];
+    if (
+      !Array.isArray(attempts) ||
+      attempts[0] === undefined ||
+      attempts[1] === undefined
+    ) {
+      throw new Error("benchmark fixture has no complete attempts");
+    }
+    mutableRecord(attempts[1], "benchmark attempt 1")["invocationIds"] =
+      structuredClone(
+        mutableRecord(attempts[0], "benchmark attempt 0")["invocationIds"],
+      );
+    const reference = await writeEvidenceObject(
+      repositoryRoot,
+      "v0.1.0-candidate",
+      "benchmark.json",
+      benchmark,
+    );
+
+    const result = await finalizeGraphFreezeFromEvidence(
+      finalizerInput(repositoryRoot, {
+        evidence: { benchmark: reference },
+      }),
+    );
+
+    expect(result.decision.blockingReasons).toContain(
+      "BenchmarkAttemptMatrixIncomplete: benchmark",
     );
   });
 
@@ -1164,10 +1513,12 @@ describe("finalizeGraphFreezeFromEvidence", () => {
       ["provider", "provider.json"],
       ["benchmark", "benchmark.json"],
     ] as const) {
-      const bytes = await readFile(join(FINALIZER_FIXTURE_ROOT, filename));
-      const path = `artifacts/release/${version}/${filename}`;
-      await writeFile(join(repositoryRoot, ...path.split("/")), bytes);
-      evidence[key] = { path, sha256: sha256(bytes) };
+      evidence[key] = await writeEvidenceObject(
+        repositoryRoot,
+        version,
+        filename,
+        await readFixtureObject(filename),
+      );
     }
 
     const previousOfflineMode =
@@ -1245,6 +1596,7 @@ describe("finalizeGraphFreezeFromEvidence", () => {
           throw new Error("provider fixture has no invocation");
         }
         invocations.push(structuredClone(invocations[0]));
+        evidence["invocationCount"] = 2;
       },
     },
     {
@@ -1297,30 +1649,6 @@ describe("finalizeGraphFreezeFromEvidence", () => {
         }
         mutableRecord(results[0], "migration result")["migratorVersion"] =
           "observation-migrator/v10";
-      },
-    },
-    {
-      name: "unsupported Graph schema major",
-      key: "graphConformance",
-      filename: "graph-conformance.json",
-      code: "GraphConformanceInvalid",
-      mutate: (evidence: Record<string, unknown>) => {
-        mutableRecord(evidence["web"], "Graph web evidence")["schemaVersion"] =
-          "observation-graph/v2";
-      },
-    },
-    {
-      name: "portable native substitute",
-      key: "nativeReports",
-      filename: "native-reports.json",
-      code: "NativeReportInvalid",
-      mutate: (evidence: Record<string, unknown>) => {
-        const reports = evidence["reports"];
-        if (!Array.isArray(reports) || reports[0] === undefined) {
-          throw new Error("native fixture has no report");
-        }
-        mutableRecord(reports[0], "native report")["environment"] =
-          "portable-test";
       },
     },
     {

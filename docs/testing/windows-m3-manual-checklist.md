@@ -340,6 +340,8 @@ Ticket 48 调用
 - `signoff` 仅在 `frozen` 时出现，回显 `operatorName`/`reviewerName`/`executedAt`/`checklistVersion`/`productVersion`/`windowsBuild`。
 - 每个 capability 记录 production wiring、验证命令、commit，以及已接受
   evidence 的版本化路径与 SHA-256。
+- Web/Desktop、Ticket 29/30 native 与 provider smoke/redaction 结果必须引用
+  独立的版本化 report bytes 与 SHA-256；索引中的通过状态不能替代 report。
 
 `decideGraphFreeze(...)` 仍保留为兼容的纯三输入辅助接口；它不替代上述
 serialized finalizer。当前仓库不存在真实已签署 Windows 证据，因此公开状态
