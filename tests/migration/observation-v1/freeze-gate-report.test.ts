@@ -11,7 +11,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { canonicalJson, sha256Hex } from "@qualigence/skill";
@@ -56,6 +56,15 @@ const TICKET_34_ORIGINAL_REVIEWED_HEAD =
   "f0e71af1a81430283983446e1a911c8bee5768b9";
 const TICKET_34_ORIGINAL_POST_REVIEW_EVIDENCE =
   ".scratch/remaining-production-closure/issues/34-release-sbom-provenance-manifest.md";
+const GIT_AUTHOR_ENV = {
+  ...process.env,
+  GIT_AUTHOR_NAME: "Fixture Author",
+  GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+  GIT_AUTHOR_DATE: "2026-08-30T07:00:00.000Z",
+  GIT_COMMITTER_NAME: "Fixture Author",
+  GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+  GIT_COMMITTER_DATE: "2026-08-30T07:00:00.000Z",
+};
 const CLOSURE_ISSUES = [
   140, 145, 143, 136, 139, 138, 141, 135, 137, 144, 134, 142, 157, 147, 155,
   150, 152, 153, 156, 149, 148, 151, 146, 154, 163, 159, 160, 167, 168, 161,
@@ -971,23 +980,114 @@ async function ensureGitObjectStore(repositoryRoot: string): Promise<void> {
     }
   }
   await execFileAsync("git", ["init", "--quiet", repositoryRoot]);
-  const { stdout } = await execFileAsync(
-    "git",
-    ["rev-parse", "--git-common-dir"],
-    { cwd: process.cwd() },
+  for (const path of [
+    "scripts/verify-release-manifest.mjs",
+    "benchmarks/detection-v1/manifest.json",
+    "benchmarks/detection-v1/ground-truth/cart.json",
+    "benchmarks/detection-v1/scenarios/cart-normal.json",
+    "benchmarks/detection-v1/scenarios/cart-known-bugs.json",
+  ]) {
+    const target = join(repositoryRoot, ...path.split("/"));
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, await readFile(join(process.cwd(), ...path.split("/"))));
+  }
+  const ticket34EvidencePath = join(
+    repositoryRoot,
+    ...TICKET_34_ORIGINAL_POST_REVIEW_EVIDENCE.split("/"),
   );
-  const commonDirectory = stdout.trim();
-  const objectDirectory = join(
-    isAbsolute(commonDirectory)
-      ? commonDirectory
-      : resolve(process.cwd(), commonDirectory),
-    "objects",
-  );
-  await mkdir(join(gitDirectory, "objects", "info"), { recursive: true });
+  await mkdir(dirname(ticket34EvidencePath), { recursive: true });
   await writeFile(
-    join(gitDirectory, "objects", "info", "alternates"),
-    `${objectDirectory}\n`,
+    ticket34EvidencePath,
+    "Ticket 34 release/SBOM/provenance manifest evidence.\n",
   );
+  await execFileAsync("git", ["-C", repositoryRoot, "add", "--all"]);
+  const { stdout: baseTree } = await execFileAsync("git", [
+    "-C",
+    repositoryRoot,
+    "write-tree",
+  ]);
+  await rm(ticket34EvidencePath, { force: true });
+  await execFileAsync("git", ["-C", repositoryRoot, "add", "--all"]);
+  const { stdout: ticket34ReviewedTree } = await execFileAsync("git", [
+    "-C",
+    repositoryRoot,
+    "write-tree",
+  ]);
+  await mkdir(join(gitDirectory, "refs", "replace"), { recursive: true });
+  await writeFile(
+    join(gitDirectory, "refs", "replace", TICKET_34_REVIEWED_TREE),
+    baseTree,
+  );
+
+  const replaceCommit = async (
+    fakeCommit: string,
+    tree: string,
+    parents: readonly string[],
+    message: string,
+  ): Promise<void> => {
+    const commitSource = [
+      `tree ${tree.trim()}`,
+      ...parents.map((parent) => `parent ${parent}`),
+      "author Fixture Author <fixture@example.invalid> 1788069600 +0000",
+      "committer Fixture Author <fixture@example.invalid> 1788069600 +0000",
+      "",
+      message,
+      "",
+    ].join("\n");
+    const sourcePath = join(repositoryRoot, `.fixture-commit-${fakeCommit}.txt`);
+    await writeFile(sourcePath, commitSource);
+    const { stdout: realCommit } = await execFileAsync("git", [
+      "-C",
+      repositoryRoot,
+      "hash-object",
+      "-t",
+      "commit",
+      "-w",
+      sourcePath,
+    ]);
+    await rm(sourcePath, { force: true });
+    await writeFile(
+      join(gitDirectory, "refs", "replace", fakeCommit),
+      realCommit,
+    );
+  };
+  const parentsByCommit = new Map<string, Set<string>>();
+  const treeByCommit = new Map<string, string>();
+  const addParent = (commit: string, parent: string): void => {
+    parentsByCommit.set(
+      commit,
+      (parentsByCommit.get(commit) ?? new Set<string>()).add(parent),
+    );
+  };
+  for (const [legacyTicket, [, head, mergeCommit]] of PULL_REQUESTS) {
+    if (legacyTicket === 34) {
+      treeByCommit.set(
+        TICKET_34_ORIGINAL_REVIEWED_HEAD,
+        ticket34ReviewedTree.trim(),
+      );
+      addParent(head, TICKET_34_ORIGINAL_REVIEWED_HEAD);
+    } else {
+      const parentHead = createHash("sha1")
+        .update(`fixture-parent:${head}`)
+        .digest("hex");
+      treeByCommit.set(parentHead, ticket34ReviewedTree.trim());
+      addParent(head, parentHead);
+    }
+    treeByCommit.set(head, TICKET_34_REVIEWED_TREE);
+    treeByCommit.set(mergeCommit, TICKET_34_REVIEWED_TREE);
+    addParent(mergeCommit, head);
+    addParent(FINALIZER_COMMIT, mergeCommit);
+  }
+  treeByCommit.set(TICKET_34_REVIEWED_HEAD, TICKET_34_REVIEWED_TREE);
+  treeByCommit.set(FINALIZER_COMMIT, TICKET_34_REVIEWED_TREE);
+  for (const [commit, tree] of treeByCommit) {
+    await replaceCommit(
+      commit,
+      tree,
+      [...(parentsByCommit.get(commit) ?? [])],
+      `Fixture replacement for ${commit}`,
+    );
+  }
 }
 
 async function writeEvidenceObject(
