@@ -30,12 +30,13 @@ const requiredSecurityVetoIds = [
 ];
 
 async function writeFixture() {
-  const root = join(process.cwd(), `.tmp-release-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  const version = `test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const root = join(process.cwd(), "artifacts", "release", version);
   fixtureRoots.push(root);
-  await mkdir(join(root, "artifacts/release/v0.1.0/gates"), { recursive: true });
+  await mkdir(join(root, "gates"), { recursive: true });
   await mkdir(join(root, "docs/testing"), { recursive: true });
   const fixturePrefix = relative(process.cwd(), root).replaceAll("\\", "/");
-  const sbomPath = `${fixturePrefix}/artifacts/release/v0.1.0/sbom.spdx.json`;
+  const sbomPath = `${fixturePrefix}/sbom.spdx.json`;
   const windowsPath = `${fixturePrefix}/docs/testing/windows-m3-manual-checklist.signed.json`;
   const sbom = JSON.stringify({
     spdxVersion: "SPDX-2.3",
@@ -57,7 +58,7 @@ async function writeFixture() {
     WindowsChecklistEvidence: {
       checklistVersion: "windows-m3-manual-checklist/v1",
       commit,
-      productVersion: "v0.1.0",
+      productVersion: version,
       runnerProtocolVersion: "runner-protocol/v1",
       windowsBuild: "Windows 11 23H2 22631",
       interactiveSessionType: "local",
@@ -78,7 +79,7 @@ async function writeFixture() {
   await writeFile(join(process.cwd(), windowsPath), windows, "utf8");
   const gateArchives = new Map<string, { path: string; sha256: string; reportSha256: string; vitestSha256: string; receiptSha256: string }>();
   for (const name of ["gate-linux", "gate-windows-rust", "gate-self-hosted", "browser-e2e"]) {
-    const archivePath = `${fixturePrefix}/artifacts/release/v0.1.0/gates/${name}.zip`;
+    const archivePath = `${fixturePrefix}/gates/${name}.zip`;
     const vitest = JSON.stringify({ numPassedTests: 1, numFailedTests: 0, numPendingTests: 0, numTodoTests: 0 }) + "\n";
     const report = JSON.stringify({ schemaVersion: "qualigence-gate-report/v1", gate: name, commit, command: ["pnpm", "vitest", "run"], selection: ["tests"], counts: { passed: 1, failed: 0, skipped: 0, todo: 0 }, status: "passed", environment: {}, files: [{ path: "vitest.json", sha256: sha256(vitest), bytes: Buffer.byteLength(vitest) }] }, null, 2) + "\n";
     const marker = JSON.stringify({ schemaVersion: "qualigence-gate-accepted/v1", gate: name, commit, report: "report.json", reportSha256: sha256(report), status: "accepted" }, null, 2) + "\n";
@@ -125,7 +126,7 @@ async function writeFixture() {
   const windowsSha = sha256(windows);
   const manifest = {
     schemaVersion: "qualigence-release-manifest/v1",
-    version: "v0.1.0",
+    version,
     repository: "ljie-PI/Qualigence",
     commit,
     generatedAt: "2026-08-29T00:00:00.000Z",
@@ -157,7 +158,7 @@ async function writeFixture() {
       ],
     },
   };
-  const manifestPath = join(root, "artifacts/release/v0.1.0/release-manifest.json");
+  const manifestPath = join(root, "release-manifest.json");
   await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf8");
   return { root, manifestPath, manifest };
 }
@@ -308,6 +309,18 @@ describe("release manifest verifier", () => {
     expect(schema.$defs.gateEvidence.properties.deliveries).toMatchObject({ minItems: 4, maxItems: 4 });
   });
 
+  it("rejects dot-segment aliases in the schema and verifier", async () => {
+    const schema = JSON.parse(await readFile("deployments/self-hosted/compose/release-manifest.schema.json", "utf8"));
+    const artifactPathPattern = new RegExp(schema.$defs.gate.properties.artifactPath.pattern);
+    expect(artifactPathPattern.test("./artifacts/release/v1/gates/gate-linux.zip")).toBe(false);
+    expect(artifactPathPattern.test("artifacts/release/v1/gates/./gate-linux.zip")).toBe(false);
+
+    const { manifestPath, manifest } = await writeFixture();
+    manifest.gates[0]!.artifactPath = manifest.gates[0]!.artifactPath.replace("/gates/", "/gates/./");
+    await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf8");
+    await expect(runVerifier(manifestPath, process.cwd())).rejects.toMatchObject({ stderr: expect.stringContaining("GateArtifactPathInvalid") });
+  });
+
   it("rejects a release version that aliases a filesystem directory", async () => {
     const { manifestPath, manifest } = await writeFixture();
     manifest.version = "..";
@@ -315,9 +328,24 @@ describe("release manifest verifier", () => {
     await expect(runVerifier(manifestPath, process.cwd())).rejects.toMatchObject({ stderr: expect.stringContaining("ReleaseVersionInvalid") });
   });
 
+  it("rejects a manifest outside the canonical artifacts/release root", async () => {
+    const { root, manifest } = await writeFixture();
+    const canonicalPrefix = relative(process.cwd(), root).replaceAll("\\", "/");
+    const alternateBase = join(process.cwd(), `.tmp-release-alternate-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    const alternateRoot = join(alternateBase, manifest.version);
+    fixtureRoots.push(alternateBase);
+    await mkdir(alternateBase, { recursive: true });
+    await rename(root, alternateRoot);
+    const alternatePrefix = relative(process.cwd(), alternateRoot).replaceAll("\\", "/");
+    const alternateManifest = JSON.parse(JSON.stringify(manifest).replaceAll(canonicalPrefix, alternatePrefix));
+    const alternateManifestPath = join(alternateRoot, "release-manifest.json");
+    await writeFile(alternateManifestPath, JSON.stringify(alternateManifest, null, 2) + "\n", "utf8");
+    await expect(runVerifier(alternateManifestPath, process.cwd())).rejects.toMatchObject({ stderr: expect.stringContaining("CanonicalReleasePathInvalid") });
+  });
+
   it("accepts one immutable manifest that binds images, SBOM, Gates, and signed Windows evidence", async () => {
     const { root, manifestPath } = await writeFixture();
-    const rendered = join(root, "artifacts/release/v0.1.0/compose.release.rendered.yaml");
+    const rendered = join(root, "compose.release.rendered.yaml");
     const { stdout } = await runVerifier(manifestPath, process.cwd(), ["--repository", "ljie-PI/Qualigence", "--commit", commit, "--render-compose", rendered]);
     expect(JSON.parse(stdout)).toMatchObject({ status: "verified", repository: "ljie-PI/Qualigence", commit });
     const compose = await readFile(rendered, "utf8");

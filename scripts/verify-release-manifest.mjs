@@ -2,7 +2,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { link, lstat, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -164,14 +164,15 @@ function resolveManifestPath(manifestPath, referencedPath) {
   return candidates;
 }
 
-function expectedGateArtifactPath(manifestPath, version, gateName) {
-  const manifestFile = resolve(manifestPath);
-  const versionDirectory = dirname(manifestFile);
-  if (basename(manifestFile) !== "release-manifest.json" || basename(versionDirectory) !== version) {
-    throw new ReleaseManifestError("ManifestPathVersionMismatch", `manifest must be stored under its selected version directory ${version}`);
+function assertCanonicalReleaseManifestPath(manifestPath, version) {
+  const expected = resolve(process.cwd(), "artifacts", "release", version, "release-manifest.json");
+  if (resolve(manifestPath) !== expected) {
+    throw new ReleaseManifestError("CanonicalReleasePathInvalid", `manifest must be stored at artifacts/release/${version}/release-manifest.json`);
   }
-  const expected = relative(resolve(process.cwd()), join(versionDirectory, "gates", `${gateName}.zip`)).split(sep).join("/");
-  return assertRepoRelativePath(expected, `${gateName}.artifactPath`);
+}
+
+function expectedGateArtifactPath(version, gateName) {
+  return `artifacts/release/${version}/gates/${gateName}.zip`;
 }
 
 async function assertMaterializedGatePath(artifactPath, gateName) {
@@ -508,7 +509,7 @@ async function validateRequiredGates(manifestPath, version, gates, commit, verif
       throw new ReleaseManifestError("GateArtifactPathDuplicate", `duplicate Gate artifactPath ${artifactPath}`);
     }
     seenArtifactPaths.add(artifactPath);
-    const expectedArtifactPath = expectedGateArtifactPath(manifestPath, version, name);
+    const expectedArtifactPath = expectedGateArtifactPath(version, name);
     if (artifactPath !== expectedArtifactPath) {
       throw new ReleaseManifestError("GateArtifactPathInvalid", `${name}.artifactPath must be ${expectedArtifactPath}`);
     }
@@ -655,6 +656,7 @@ async function verifyManifest({ manifestPath, expectedRepository, expectedCommit
     throw new ReleaseManifestError("ManifestSchemaVersionInvalid", `expected ${MANIFEST_SCHEMA_VERSION}`);
   }
   const version = assertReleaseVersion(manifest.version);
+  assertCanonicalReleaseManifestPath(manifestPath, version);
   if (!Number.isFinite(Date.parse(asNonEmptyString(manifest.generatedAt, "generatedAt")))) throw new ReleaseManifestError("GeneratedAtInvalid", "generatedAt must be ISO-8601 parseable");
   const repository = asNonEmptyString(manifest.repository, "repository");
   const commit = asNonEmptyString(manifest.commit, "commit");
