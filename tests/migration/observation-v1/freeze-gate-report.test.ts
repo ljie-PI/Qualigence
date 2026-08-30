@@ -15,6 +15,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { canonicalJson, sha256Hex } from "@qualigence/skill";
+import { setReleaseVerifierRunnerForTests } from "../../../packages/observation-migration/dist/freeze-gate.js";
 import {
   buildFreezeReport,
   buildFreezeGateReport,
@@ -22,7 +23,7 @@ import {
   generateAutomatedFreezeGateReport,
   OBSERVATION_FREEZE_GATE_REPORT_VERSION,
   REQUIRED_SECURITY_VETO_ITEM_IDS,
-  REQUIRED_WINDOWS_CHECKLIST_SECTION_COUNTS,
+  REQUIRED_WINDOWS_CHECKLIST_ITEM_IDS,
   REQUIRED_SHARED_CORE_FIELDS,
   WINDOWS_M3_CHECKLIST_VERSION,
   type ObservationFreezeReportV1,
@@ -91,7 +92,10 @@ const REMEDIATION_ISSUES = [
 const REMEDIATION_PARENTS = [
   2, 17, 3, 18, 18, 18, 18, 18, 18, 18, 21, 30,
 ] as const;
-const PULL_REQUESTS = new Map([
+const PULL_REQUESTS = new Map<
+  number,
+  readonly [pullRequest: number, head: string, mergeCommit: string]
+>([
   [
     1,
     [
@@ -658,8 +662,112 @@ function refreshGithubCaptureHash(value: unknown): void {
   );
 }
 
+function githubApiCaptureFixture(value: unknown): Record<string, unknown> {
+  const evidence = mutableRecord(value, "GitHub closure fixture");
+  const capture = mutableRecord(evidence["capture"], "GitHub API capture");
+  const issueResponses: Record<string, unknown>[] = [];
+  const pullRequestResponses: Record<string, unknown>[] = [];
+  const addIssue = (
+    issue: unknown,
+    closingPullRequests: readonly number[] = [],
+  ): void => {
+    const record = mutableRecord(issue, "GitHub issue fixture");
+    const number = Number(record["number"]);
+    const body = {
+      kind: "issue",
+      issue: record,
+      closingPullRequests,
+    };
+    issueResponses.push({
+      endpoint: `https://api.github.com/repos/ljie-PI/Qualigence/issues/${number}`,
+      bodySha256: sha256Hex(canonicalJson(body)),
+      body,
+    });
+  };
+  const addPullRequest = (pullRequest: unknown): void => {
+    if (pullRequest === undefined) {
+      return;
+    }
+    const record = mutableRecord(pullRequest, "GitHub pull request fixture");
+    const number = Number(record["number"]);
+    const body = { kind: "pull-request", pullRequest: record };
+    pullRequestResponses.push({
+      endpoint: `https://api.github.com/repos/ljie-PI/Qualigence/pulls/${number}`,
+      bodySha256: sha256Hex(canonicalJson(body)),
+      body,
+    });
+  };
+  for (const value of evidence["tickets"] as readonly unknown[]) {
+    const ticket = mutableRecord(value, "GitHub closure ticket fixture");
+    const legacyTicket = Number(ticket["legacyTicket"]);
+    addIssue(
+      ticket["issue"],
+      legacyTicket === 35
+        ? [Number(capture["ticket35ClosingPullRequest"])]
+        : [],
+    );
+    addPullRequest(ticket["pullRequest"]);
+  }
+  for (const value of evidence["remediation"] as readonly unknown[]) {
+    const ticket = mutableRecord(value, "GitHub remediation ticket fixture");
+    addIssue(ticket["issue"]);
+    addPullRequest(ticket["pullRequest"]);
+  }
+  const integrated = mutableRecord(
+    evidence["integratedAcceptance"],
+    "integrated acceptance fixture",
+  );
+  addIssue(integrated["issue"]);
+  return {
+    schemaVersion: "qualigence-github-api-capture/v1",
+    repository: evidence["repository"],
+    version: evidence["version"],
+    commit: evidence["commit"],
+    generatedAt: evidence["generatedAt"],
+    evidenceClass: "real",
+    source: "github-graphql-and-rest-api",
+    apiVersion: "2022-11-28",
+    actor: capture["actor"],
+    issueResponses,
+    pullRequestResponses,
+  };
+}
+
 function sha256(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+async function withOfflineAttestationVerifier<T>(
+  action: () => Promise<T>,
+): Promise<T> {
+  const restore = setReleaseVerifierRunnerForTests(async (invocation) => {
+    const verifierPath = invocation.args[0];
+    if (verifierPath === undefined) {
+      throw new Error("release verifier invocation has no executable script");
+    }
+    const { stdout: selectedVerifier } = await execFileAsync("git", [
+      "-C",
+      invocation.cwd,
+      "show",
+      `${FINALIZER_COMMIT}:scripts/verify-release-manifest.mjs`,
+    ]);
+    expect(await readFile(verifierPath, "utf8")).toBe(selectedVerifier);
+    await execFileAsync(invocation.executable, [...invocation.args], {
+      cwd: invocation.cwd,
+      env: {
+        ...invocation.env,
+        QUALIGENCE_ALLOW_OFFLINE_ATTESTATION_FIXTURES: "true",
+      },
+      maxBuffer: 4 * 1024 * 1024,
+      signal: invocation.signal,
+      timeout: 120_000,
+    });
+  });
+  try {
+    return await action();
+  } finally {
+    restore();
+  }
 }
 
 function crc32(bytes: Buffer): number {
@@ -805,6 +913,25 @@ async function writeEvidenceObject(
   await mkdir(join(repositoryRoot, "artifacts", "release", version), {
     recursive: true,
   });
+  if (filename === "github-closure.json") {
+    const apiCapture = githubApiCaptureFixture(materializedValue);
+    const apiCaptureBytes = Buffer.from(
+      `${JSON.stringify(apiCapture, null, 2)}\n`,
+      "utf8",
+    );
+    const apiCapturePath = `artifacts/release/${version}/github-api-capture.json`;
+    await writeFile(
+      join(repositoryRoot, ...apiCapturePath.split("/")),
+      apiCaptureBytes,
+    );
+    mutableRecord(
+      mutableRecord(materializedValue, "GitHub closure fixture")["capture"],
+      "GitHub API capture",
+    )["response"] = {
+      path: apiCapturePath,
+      sha256: sha256(apiCaptureBytes),
+    };
+  }
   const dependencyHashes = new Map<string, string>();
   const refreshReferences = (
     candidate: unknown,
@@ -873,8 +1000,8 @@ async function writeEvidenceObject(
 async function writeReleaseFixture(
   repositoryRoot: string,
   version: string,
-  useOfflineVerifierFixture = true,
 ): Promise<{ path: string; sha256: string }> {
+  await ensureGitObjectStore(repositoryRoot);
   const releaseRoot = join(repositoryRoot, "artifacts", "release", version);
   const gateRoot = join(releaseRoot, "gate-artifacts");
   await mkdir(gateRoot, { recursive: true });
@@ -884,19 +1011,9 @@ async function writeReleaseFixture(
     "scripts",
     "verify-release-manifest.mjs",
   );
-  const verifierFixture = useOfflineVerifierFixture
-    ? [
-        'import { execFileSync } from "node:child_process";',
-        `execFileSync(process.execPath, [${JSON.stringify(authoritativeVerifier)}, ...process.argv.slice(2)], {`,
-        '  stdio: "inherit",',
-        '  env: { ...process.env, QUALIGENCE_ALLOW_OFFLINE_ATTESTATION_FIXTURES: "true" },',
-        "});",
-        "",
-      ].join("\n")
-    : await readFile(authoritativeVerifier);
   await writeFile(
     join(repositoryRoot, "scripts", "verify-release-manifest.mjs"),
-    verifierFixture,
+    await readFile(authoritativeVerifier),
   );
 
   const digestA = `sha256:${"a".repeat(64)}`;
@@ -1228,27 +1345,16 @@ function validWindowsChecklistEvidence(): WindowsChecklistEvidence {
 }
 
 function completeWindowsChecklistItems() {
-  return Object.entries(REQUIRED_WINDOWS_CHECKLIST_SECTION_COUNTS).flatMap(
-    ([section, count]) => {
-      const ids =
-        section === "16"
-          ? [...REQUIRED_SECURITY_VETO_ITEM_IDS]
-          : Array.from(
-              { length: count },
-              (_, index) => `${section}.item-${index + 1}`,
-            );
-      return ids.map((id, index) => ({
-        section,
-        id,
-        description: `checklist item ${id}`,
-        result:
-          section === "17" && index > 0
-            ? ("not_applicable" as const)
-            : ("pass" as const),
-        note: "fixture evidence ref",
-      }));
-    },
-  );
+  return REQUIRED_WINDOWS_CHECKLIST_ITEM_IDS.map((id) => ({
+    section: id.split(".")[0] ?? "",
+    id,
+    description: `checklist item ${id}`,
+    result:
+      id.startsWith("17.") && id !== "17.item-1"
+        ? ("not_applicable" as const)
+        : ("pass" as const),
+    note: "fixture evidence ref",
+  }));
 }
 
 describe("generateAutomatedFreezeGateReport (this automated PR / Linux sandbox)", () => {
@@ -1647,7 +1753,7 @@ describe("finalizeGraphFreezeFromEvidence", () => {
     );
 
     expect(result.decision.blockingReasons).toContain(
-      "GithubPullRequestUnexpected: github-closure",
+      "GithubCaptureInvalid: github-closure",
     );
   });
 
@@ -2240,14 +2346,16 @@ describe("finalizeGraphFreezeFromEvidence", () => {
       );
     }
 
-    const result = await finalizeGraphFreezeFromEvidence({
-      repositoryRoot,
-      repository: "ljie-PI/Qualigence",
-      version,
-      commit: FINALIZER_COMMIT,
-      decidedAt: "2026-08-30T08:00:00.000Z",
-      evidence,
-    });
+    const result = await withOfflineAttestationVerifier(() =>
+      finalizeGraphFreezeFromEvidence({
+        repositoryRoot,
+        repository: "ljie-PI/Qualigence",
+        version,
+        commit: FINALIZER_COMMIT,
+        decidedAt: "2026-08-30T08:00:00.000Z",
+        evidence,
+      }),
+    );
 
     expect(result.decision.blockingReasons).toEqual([]);
     expect(result.decision.status).toBe("frozen");
@@ -2270,11 +2378,7 @@ describe("finalizeGraphFreezeFromEvidence", () => {
     );
     fixtureRoots.push(repositoryRoot);
     const version = "v0.1.0-candidate";
-    const releaseManifest = await writeReleaseFixture(
-      repositoryRoot,
-      version,
-      false,
-    );
+    const releaseManifest = await writeReleaseFixture(repositoryRoot, version);
     const previousOfflineMode =
       process.env["QUALIGENCE_ALLOW_OFFLINE_ATTESTATION_FIXTURES"];
     const previousVerification = process.env["QUALIGENCE_VERIFY_ATTESTATIONS"];
@@ -2460,7 +2564,7 @@ describe("finalizeGraphFreezeFromEvidence", () => {
       name: "modified benchmark runner input",
       key: "benchmark",
       filename: "benchmark.json",
-      code: "BenchmarkReportInvalid",
+      code: "BenchmarkSourceInvalid",
       mutate: (evidence: Record<string, unknown>) => {
         const runnerInputs = mutableRecord(
           evidence["runnerInputs"],
@@ -2637,6 +2741,7 @@ describe("finalizeGraphFreezeFromEvidence", () => {
     ["failed Windows veto", "WindowsEvidenceVetoFailed"],
     ["duplicate Windows checklist item", "WindowsEvidenceItemDuplicate"],
     ["incomplete Windows checklist", "WindowsEvidenceItemMissing"],
+    ["substituted Windows checklist item", "WindowsEvidenceItemInvalid"],
     ["duplicate Windows signer", "WindowsEvidenceSignerInvalid"],
     ["cross-commit CI artifact", "GateArtifactCommitMismatch"],
     ["invalid SBOM", "SbomSchemaInvalid"],
@@ -2667,6 +2772,7 @@ describe("finalizeGraphFreezeFromEvidence", () => {
       scenario === "failed Windows veto" ||
       scenario === "duplicate Windows checklist item" ||
       scenario === "incomplete Windows checklist" ||
+      scenario === "substituted Windows checklist item" ||
       scenario === "duplicate Windows signer"
     ) {
       const windowsReference = mutableRecord(
@@ -2708,6 +2814,9 @@ describe("finalizeGraphFreezeFromEvidence", () => {
           mutableRecord(veto, "Windows checklist veto")["result"] = "fail";
         } else if (scenario === "duplicate Windows checklist item") {
           items.push(structuredClone(items[0]));
+        } else if (scenario === "substituted Windows checklist item") {
+          mutableRecord(items[0], "Windows checklist item")["id"] =
+            "3.substituted";
         } else {
           items.shift();
         }
@@ -2748,15 +2857,17 @@ describe("finalizeGraphFreezeFromEvidence", () => {
 
     const manifestBytes = `${JSON.stringify(manifest, null, 2)}\n`;
     await writeFile(manifestPath, manifestBytes);
-    const result = await finalizeGraphFreezeFromEvidence(
-      finalizerInput(repositoryRoot, {
-        evidence: {
-          releaseManifest: {
-            path: releaseManifest.path,
-            sha256: sha256(manifestBytes),
+    const result = await withOfflineAttestationVerifier(() =>
+      finalizeGraphFreezeFromEvidence(
+        finalizerInput(repositoryRoot, {
+          evidence: {
+            releaseManifest: {
+              path: releaseManifest.path,
+              sha256: sha256(manifestBytes),
+            },
           },
-        },
-      }),
+        }),
+      ),
     );
     for (const capabilityId of [
       "release-manifest",

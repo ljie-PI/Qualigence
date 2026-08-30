@@ -3,7 +3,7 @@ import {
   buildFreezeReport,
   decideGraphFreeze,
   REQUIRED_SECURITY_VETO_ITEM_IDS,
-  REQUIRED_WINDOWS_CHECKLIST_SECTION_COUNTS,
+  REQUIRED_WINDOWS_CHECKLIST_ITEM_IDS,
   REQUIRED_SHARED_CORE_FIELDS,
   WINDOWS_M3_CHECKLIST_VERSION,
   type ObservationFreezeReportV1,
@@ -49,26 +49,15 @@ function dirtyCandidateReport(): ObservationFreezeReportV1 {
 
 /** Every versioned checklist item, including all passing security vetoes. */
 function passingVetoItems(): WindowsChecklistItemEvidence[] {
-  return Object.entries(REQUIRED_WINDOWS_CHECKLIST_SECTION_COUNTS).flatMap(
-    ([section, count]) => {
-      const ids =
-        section === "16"
-          ? [...REQUIRED_SECURITY_VETO_ITEM_IDS]
-          : Array.from(
-              { length: count },
-              (_, index) => `${section}.item-${index + 1}`,
-            );
-      return ids.map((id, index) => ({
-        section,
-        id,
-        description: `checklist item ${id}`,
-        result:
-          section === "17" && index > 0
-            ? ("not_applicable" as const)
-            : ("pass" as const),
-      }));
-    },
-  );
+  return REQUIRED_WINDOWS_CHECKLIST_ITEM_IDS.map((id) => ({
+    section: id.split(".")[0] ?? "",
+    id,
+    description: `checklist item ${id}`,
+    result:
+      id.startsWith("17.") && id !== "17.item-1"
+        ? ("not_applicable" as const)
+        : ("pass" as const),
+  }));
 }
 
 function validWindowsChecklistEvidence(
@@ -201,6 +190,20 @@ describe("decideGraphFreeze", () => {
 
   it("stays candidate when a required security-veto item is absent from the evidence", () => {
     const items = passingVetoItems().slice(1);
+    const decision = decideGraphFreeze(
+      cleanCandidateReport(),
+      validWindowsChecklistEvidence({ items }),
+      validSchemaConformanceEvidence(),
+      NOW,
+    );
+
+    expect(decision.status).toBe("candidate");
+    expect(decision.inputs.windowsChecklistValid).toBe(false);
+  });
+
+  it("stays candidate when a checklist item identity is substituted", () => {
+    const items = passingVetoItems();
+    items[0] = { ...items[0]!, id: "3.substituted" };
     const decision = decideGraphFreeze(
       cleanCandidateReport(),
       validWindowsChecklistEvidence({ items }),

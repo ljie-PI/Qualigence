@@ -54,6 +54,18 @@ export const REQUIRED_WINDOWS_CHECKLIST_SECTION_COUNTS = {
   "17": 3,
 } as const;
 
+/** Every stable item id in the executable sections of checklist v1. */
+export const REQUIRED_WINDOWS_CHECKLIST_ITEM_IDS: readonly string[] =
+  Object.entries(REQUIRED_WINDOWS_CHECKLIST_SECTION_COUNTS).flatMap(
+    ([section, count]) =>
+      section === "16"
+        ? [...REQUIRED_SECURITY_VETO_ITEM_IDS]
+        : Array.from(
+            { length: count },
+            (_, index) => `${section}.item-${index + 1}`,
+          ),
+  );
+
 /**
  * The shared cross-platform (Web + Desktop) core node/state/checkpoint fields
  * both targets must validate identically for the v1 schema to be considered
@@ -384,6 +396,13 @@ function validateWindowsChecklist(
     Object.keys(REQUIRED_WINDOWS_CHECKLIST_SECTION_COUNTS).length
   ) {
     reasons.push("Windows checklist contains an unknown executable section");
+    ok = false;
+  }
+  if (
+    byId.size !== REQUIRED_WINDOWS_CHECKLIST_ITEM_IDS.length ||
+    REQUIRED_WINDOWS_CHECKLIST_ITEM_IDS.some((id) => !byId.has(id))
+  ) {
+    reasons.push("Windows checklist does not contain the canonical item ids");
     ok = false;
   }
 

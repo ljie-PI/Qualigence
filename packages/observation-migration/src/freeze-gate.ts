@@ -11,7 +11,14 @@ import {
 } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import { OBSERVATION_GRAPH_V1_VERSION } from "@qualigence/observation-contracts";
+import {
+  OBSERVATION_GRAPH_V1_SCHEMA,
+  OBSERVATION_GRAPH_V1_VERSION,
+  WEB_EXTENSION_V1_TYPE,
+  observationGraphHash,
+  type ObservationGraphV1,
+  type ObservationNodeV1,
+} from "@qualigence/observation-contracts";
 import { canonicalJson, sha256Hex } from "@qualigence/skill";
 import {
   OBSERVATION_FREEZE_REPORT_VERSION,
@@ -23,6 +30,7 @@ import {
   GraphFreezeFinalizationError,
   REQUIRED_SHARED_CORE_FIELDS,
   REQUIRED_SECURITY_VETO_ITEM_IDS,
+  REQUIRED_WINDOWS_CHECKLIST_ITEM_IDS,
   REQUIRED_WINDOWS_CHECKLIST_SECTION_COUNTS,
   decideGraphFreeze,
   type FreezeDecision,
@@ -1604,10 +1612,179 @@ async function validatePullRequest(
   }
 }
 
+interface GithubApiCapture {
+  readonly reference: GraphFreezeEvidenceReference;
+  readonly issues: ReadonlyMap<
+    number,
+    {
+      readonly issue: Record<string, unknown>;
+      readonly closingPullRequests: readonly unknown[];
+    }
+  >;
+  readonly pullRequests: ReadonlyMap<number, Record<string, unknown>>;
+}
+
+async function readGithubApiCapture(
+  capture: Record<string, unknown>,
+  input: FinalizeGraphFreezeInput,
+): Promise<GithubApiCapture> {
+  const { reference, record } = await readBoundEvidenceRecord(
+    input,
+    "github-closure",
+    capture["response"],
+    "GitHub API response capture",
+  );
+  assertKeys(
+    record,
+    [
+      "schemaVersion",
+      "repository",
+      "version",
+      "commit",
+      "generatedAt",
+      "evidenceClass",
+      "source",
+      "apiVersion",
+      "actor",
+      "issueResponses",
+      "pullRequestResponses",
+    ],
+    "GitHub API response capture",
+  );
+  if (
+    record["schemaVersion"] !== "qualigence-github-api-capture/v1" ||
+    record["source"] !== "github-graphql-and-rest-api" ||
+    record["apiVersion"] !== "2022-11-28" ||
+    record["actor"] !== capture["actor"] ||
+    record["generatedAt"] !== capture["capturedAt"]
+  ) {
+    throw new EvidenceValidationError(
+      "GithubCaptureInvalid",
+      "GitHub response capture metadata is inconsistent",
+    );
+  }
+
+  const parseResponses = (
+    key: "issueResponses" | "pullRequestResponses",
+    kind: "issue" | "pull-request",
+  ): ReadonlyMap<number, Record<string, unknown>> => {
+    const responses = requireArray(record, key, "GitHub API response capture");
+    const byNumber = new Map<number, Record<string, unknown>>();
+    for (const [index, value] of responses.entries()) {
+      const response = asRecord(value, `GitHub API ${kind} response ${index}`);
+      assertKeys(
+        response,
+        ["endpoint", "bodySha256", "body"],
+        `GitHub API ${kind} response ${index}`,
+      );
+      const body = asRecord(
+        response["body"],
+        `GitHub API ${kind} response ${index}.body`,
+      );
+      const nested =
+        kind === "issue"
+          ? asRecord(body["issue"], `GitHub API issue ${index}`)
+          : asRecord(body["pullRequest"], `GitHub API pull request ${index}`);
+      const number = requireSafeInteger(
+        nested,
+        "number",
+        `GitHub API ${kind} response ${index}`,
+      );
+      const expectedEndpoint = `https://api.github.com/repos/${input.repository}/${
+        kind === "issue" ? "issues" : "pulls"
+      }/${number}`;
+      if (
+        body["kind"] !== kind ||
+        response["endpoint"] !== expectedEndpoint ||
+        response["bodySha256"] !== sha256Hex(canonicalJson(body)) ||
+        byNumber.has(number)
+      ) {
+        throw new EvidenceValidationError(
+          "GithubCaptureInvalid",
+          `GitHub API ${kind} response ${number} is malformed, duplicated, or hash-mismatched`,
+        );
+      }
+      byNumber.set(number, body);
+    }
+    return byNumber;
+  };
+
+  const issueBodies = parseResponses("issueResponses", "issue");
+  const issues = new Map<
+    number,
+    {
+      readonly issue: Record<string, unknown>;
+      readonly closingPullRequests: readonly unknown[];
+    }
+  >();
+  for (const [number, body] of issueBodies) {
+    issues.set(number, {
+      issue: asRecord(body["issue"], `GitHub API issue ${number}`),
+      closingPullRequests: requireArray(
+        body,
+        "closingPullRequests",
+        `GitHub API issue ${number}`,
+      ),
+    });
+  }
+  const pullRequestBodies = parseResponses(
+    "pullRequestResponses",
+    "pull-request",
+  );
+  const pullRequests = new Map<number, Record<string, unknown>>();
+  for (const [number, body] of pullRequestBodies) {
+    pullRequests.set(
+      number,
+      asRecord(body["pullRequest"], `GitHub API pull request ${number}`),
+    );
+  }
+  return { reference, issues, pullRequests };
+}
+
+function assertGithubIssueCapture(
+  capture: GithubApiCapture,
+  issue: Record<string, unknown>,
+  expectedClosingPullRequests: readonly number[],
+): void {
+  const number = requireSafeInteger(issue, "number", "GitHub issue evidence");
+  const captured = capture.issues.get(number);
+  if (
+    captured === undefined ||
+    canonicalJson(captured.issue) !== canonicalJson(issue) ||
+    canonicalJson(captured.closingPullRequests) !==
+      canonicalJson(expectedClosingPullRequests)
+  ) {
+    throw new EvidenceValidationError(
+      "GithubCaptureInvalid",
+      `GitHub API capture does not prove issue ${number} or its closing linkage`,
+    );
+  }
+}
+
+function assertGithubPullRequestCapture(
+  capture: GithubApiCapture,
+  pullRequest: unknown,
+): void {
+  const record = asRecord(pullRequest, "GitHub pull request evidence");
+  const number = requireSafeInteger(
+    record,
+    "number",
+    "GitHub pull request evidence",
+  );
+  if (
+    canonicalJson(capture.pullRequests.get(number)) !== canonicalJson(record)
+  ) {
+    throw new EvidenceValidationError(
+      "GithubCaptureInvalid",
+      `GitHub API capture does not prove pull request ${number}`,
+    );
+  }
+}
+
 async function validateGithubClosureEvidence(
   value: unknown,
   input: FinalizeGraphFreezeInput,
-): Promise<void> {
+): Promise<readonly GraphFreezeEvidenceReference[]> {
   const evidence = asRecord(value, "GitHub closure evidence");
   assertKeys(
     evidence,
@@ -1644,6 +1821,7 @@ async function validateGithubClosureEvidence(
       "capturedAt",
       "payloadSha256",
       "ticket35ClosingPullRequest",
+      "response",
     ],
     "GitHub API capture",
   );
@@ -1668,6 +1846,7 @@ async function validateGithubClosureEvidence(
       "GitHub closure evidence must hash-bind one canonical URL/API capture",
     );
   }
+  const apiCapture = await readGithubApiCapture(capture, input);
   if (evidence["umbrellaIssue"] !== 67) {
     throw new EvidenceValidationError(
       "GithubUmbrellaMismatch",
@@ -1731,6 +1910,21 @@ async function validateGithubClosureEvidence(
       `legacy Ticket ${legacyTicket} issue`,
     );
     const expectedStatus = legacyTicket === 31 ? "superseded" : "resolved";
+    const pullRequestNumber =
+      ticket["pullRequest"] === undefined
+        ? undefined
+        : requireSafeInteger(
+            asRecord(ticket["pullRequest"], "GitHub pull request evidence"),
+            "number",
+            "GitHub pull request evidence",
+          );
+    assertGithubIssueCapture(
+      apiCapture,
+      issue,
+      legacyTicket === 35 && pullRequestNumber !== undefined
+        ? [pullRequestNumber]
+        : [],
+    );
     if (
       issue["number"] !== REQUIRED_CLOSURE_ISSUES[legacyTicket - 1] ||
       issue["parentIssue"] !== 67 ||
@@ -1807,6 +2001,7 @@ async function validateGithubClosureEvidence(
           `resolved legacy Ticket ${legacyTicket} has no merged pull request`,
         );
       }
+      assertGithubPullRequestCapture(apiCapture, ticket["pullRequest"]);
       await validatePullRequest(
         ticket["pullRequest"],
         legacyTicket,
@@ -1816,6 +2011,7 @@ async function validateGithubClosureEvidence(
         seenPullRequests,
       );
     } else if (ticket["pullRequest"] !== undefined) {
+      assertGithubPullRequestCapture(apiCapture, ticket["pullRequest"]);
       await validatePullRequest(
         ticket["pullRequest"],
         legacyTicket,
@@ -1888,6 +2084,7 @@ async function validateGithubClosureEvidence(
       `legacy Ticket ${legacyTicket} issue`,
     );
     const classification = item["classification"];
+    assertGithubIssueCapture(apiCapture, issue, []);
     const expectedClassification =
       legacyTicket === 46 ? "superseded" : "resolved-remediation";
     if (
@@ -1925,6 +2122,7 @@ async function validateGithubClosureEvidence(
           `resolved remediation Ticket ${legacyTicket} has no merged pull request`,
         );
       }
+      assertGithubPullRequestCapture(apiCapture, item["pullRequest"]);
       await validatePullRequest(
         item["pullRequest"],
         legacyTicket,
@@ -1934,6 +2132,7 @@ async function validateGithubClosureEvidence(
         seenPullRequests,
       );
     } else if (item["pullRequest"] !== undefined) {
+      assertGithubPullRequestCapture(apiCapture, item["pullRequest"]);
       await validatePullRequest(
         item["pullRequest"],
         legacyTicket,
@@ -1958,6 +2157,7 @@ async function validateGithubClosureEvidence(
     integratedAcceptance["issue"],
     "integrated Ticket 48 issue",
   );
+  assertGithubIssueCapture(apiCapture, integratedIssue, []);
   assertKeys(
     integratedIssue,
     ["number", "parentIssue", "state", "status", "blockedBy"],
@@ -2000,6 +2200,16 @@ async function validateGithubClosureEvidence(
       "Ticket 35 must use the closing pull request linked by the Issue #165 API capture",
     );
   }
+  if (
+    apiCapture.issues.size !== 48 ||
+    apiCapture.pullRequests.size !== seenPullRequests.size
+  ) {
+    throw new EvidenceValidationError(
+      "GithubCaptureInvalid",
+      "GitHub API capture contains missing or unrelated issue/PR responses",
+    );
+  }
+  return [apiCapture.reference];
 }
 
 function requirePositiveInteger(
@@ -2288,6 +2498,25 @@ async function repositoryJsonAtCommit(
   input: FinalizeGraphFreezeInput,
   path: string,
 ): Promise<{ readonly value: unknown; readonly sha256: string }> {
+  const source = await repositoryFileAtCommit(input, path);
+  try {
+    return {
+      value: JSON.parse(source.text),
+      sha256: source.sha256,
+    };
+  } catch (error) {
+    throw new EvidenceValidationError(
+      "BenchmarkSourceInvalid",
+      `${path} in the selected commit is not valid JSON: ${errorMessage(error)}`,
+    );
+  }
+}
+
+async function repositoryFileAtCommit(
+  input: FinalizeGraphFreezeInput,
+  path: string,
+  errorCode = "BenchmarkSourceInvalid",
+): Promise<{ readonly text: string; readonly sha256: string }> {
   try {
     const { stdout } = await execFileAsync(
       "git",
@@ -2298,7 +2527,7 @@ async function repositoryJsonAtCommit(
       },
     );
     return {
-      value: JSON.parse(stdout),
+      text: stdout,
       sha256: sha256Hex(stdout),
     };
   } catch (error) {
@@ -2309,10 +2538,161 @@ async function repositoryJsonAtCommit(
       );
     }
     throw new EvidenceValidationError(
-      "BenchmarkSourceInvalid",
+      errorCode,
       `cannot read ${path} from selected commit: ${errorMessage(error)}`,
     );
   }
+}
+
+function canonicalBenchmarkScenarioBinding(value: unknown): {
+  readonly binding: Record<string, unknown>;
+  readonly origins: readonly string[];
+} {
+  const scenario = asRecord(value, "canonical benchmark scenario");
+  const scenarioId = requireString(
+    scenario,
+    "scenarioId",
+    "canonical benchmark scenario",
+  );
+  const mode = scenario["mode"];
+  if (mode !== "normal" && mode !== "fault") {
+    throw new EvidenceValidationError(
+      "BenchmarkSourceInvalid",
+      `canonical benchmark scenario ${scenarioId} has an invalid mode`,
+    );
+  }
+  const seedUrl = new URL(
+    requireString(scenario, "seedUrl", `canonical scenario ${scenarioId}`),
+  );
+  const origins = new Set<string>([seedUrl.origin]);
+  const states = requireArray(
+    scenario,
+    "states",
+    `canonical scenario ${scenarioId}`,
+  ).map((value, stateIndex) => {
+    const state = asRecord(
+      value,
+      `canonical scenario ${scenarioId} state ${stateIndex}`,
+    );
+    const stateId = requireString(
+      state,
+      "id",
+      `canonical scenario ${scenarioId} state ${stateIndex}`,
+    );
+    const stateUrl = new URL(
+      requireString(
+        state,
+        "url",
+        `canonical scenario ${scenarioId} state ${stateId}`,
+      ),
+    );
+    origins.add(stateUrl.origin);
+    const nodes = requireArray(
+      state,
+      "nodes",
+      `canonical scenario ${scenarioId} state ${stateId}`,
+    ).map((value, nodeIndex): ObservationNodeV1 => {
+      const node = asRecord(
+        value,
+        `canonical scenario ${scenarioId} state ${stateId} node ${nodeIndex}`,
+      );
+      const confidence = node["confidence"];
+      if (typeof confidence !== "number" || !Number.isFinite(confidence)) {
+        throw new EvidenceValidationError(
+          "BenchmarkSourceInvalid",
+          `canonical scenario ${scenarioId} node ${nodeIndex} has invalid confidence`,
+        );
+      }
+      const text = node["text"];
+      const disabled = node["disabled"];
+      return {
+        id: requireString(
+          node,
+          "id",
+          `canonical scenario ${scenarioId} node ${nodeIndex}`,
+        ),
+        role: requireString(
+          node,
+          "role",
+          `canonical scenario ${scenarioId} node ${nodeIndex}`,
+        ),
+        ...(typeof node["name"] === "string" ? { name: node["name"] } : {}),
+        ...(typeof node["value"] === "string" ? { value: node["value"] } : {}),
+        state: {
+          ...(typeof text === "string" ? { text } : {}),
+          ...(typeof disabled === "boolean" ? { disabled } : {}),
+        },
+        relations: [],
+        source: {
+          adapterId: "benchmark-scenario",
+          sourceKind: "fixture",
+        },
+        confidence,
+        sensitivity: "public",
+        extensions: {},
+        evidenceRefs: [],
+      };
+    });
+    const root: ObservationNodeV1 = {
+      id: `${scenarioId}:${stateId}:root`,
+      role: "document",
+      ...(typeof state["title"] === "string" ? { name: state["title"] } : {}),
+      state: {},
+      relations: nodes.map((node) => ({
+        type: "child",
+        targetNodeId: node.id,
+      })),
+      source: {
+        adapterId: "benchmark-scenario",
+        sourceKind: "fixture",
+      },
+      confidence: 1,
+      sensitivity: "public",
+      extensions: {},
+      evidenceRefs: [],
+    };
+    const graph: ObservationGraphV1 = {
+      schema: OBSERVATION_GRAPH_V1_SCHEMA,
+      graphId: `${scenarioId}:${stateId}`,
+      target: { kind: "web", targetId: stateUrl.origin },
+      capturedAt: "1970-01-01T00:00:00.000Z",
+      rootNodeIds: [root.id],
+      nodes: [root, ...nodes],
+      evidenceRefs: [],
+      extensions: {
+        [WEB_EXTENSION_V1_TYPE]: {
+          type: WEB_EXTENSION_V1_TYPE,
+          version: "1.0",
+          payload: {
+            origin: stateUrl.origin,
+            pathname: stateUrl.pathname,
+            title: typeof state["title"] === "string" ? state["title"] : "",
+            viewport: {
+              width: 1280,
+              height: 720,
+              devicePixelRatio: 1,
+            },
+            query: {},
+          },
+        },
+      },
+    };
+    return {
+      id: stateId,
+      advanceNodeId: state["advanceNodeId"] ?? null,
+      signals: state["signals"] ?? [],
+      observationGraphSha256: observationGraphHash(graph),
+    };
+  });
+  return {
+    binding: {
+      scenarioId,
+      mode,
+      seedUrl: { origin: seedUrl.origin, pathname: seedUrl.pathname },
+      states,
+    },
+    origins: [...origins].sort(),
+  };
 }
 
 async function validateBenchmarkEvidence(
@@ -2386,6 +2766,19 @@ async function validateBenchmarkEvidence(
       );
     }
     canonicalSources.set(requiredPath, canonical.value);
+  }
+  const canonicalScenarioBindings = new Map<string, Record<string, unknown>>();
+  const canonicalOrigins = new Set<string>();
+  for (const sourcePath of requiredSourcePaths.slice(2)) {
+    const source = canonicalSources.get(sourcePath);
+    const canonical = canonicalBenchmarkScenarioBinding(source);
+    const scenarioId = requireString(
+      canonical.binding,
+      "scenarioId",
+      `canonical benchmark source ${sourcePath}`,
+    );
+    canonicalScenarioBindings.set(scenarioId, canonical.binding);
+    canonical.origins.forEach((origin) => canonicalOrigins.add(origin));
   }
 
   const manifest = asRecord(evidence["manifest"], "benchmark manifest");
@@ -2728,6 +3121,8 @@ async function validateBenchmarkEvidence(
     }) ||
     new Set(policy["allowedOrigins"]).size !==
       policy["allowedOrigins"].length ||
+    canonicalJson([...policy["allowedOrigins"]].sort()) !==
+      canonicalJson([...canonicalOrigins].sort()) ||
     policy["maximumSteps"] !== profile["maximumSteps"] ||
     policy["maximumWallClockMs"] !== profile["maximumWallClockMs"] ||
     policy["maximumModelTokens"] !== profile["maximumModelTokens"] ||
@@ -2777,69 +3172,14 @@ async function validateBenchmarkEvidence(
         `benchmark scenario definition ${scenarioId} is missing, duplicated, or inconsistent`,
       );
     }
-    const manifestScenario = scenariosById.get(scenarioId);
-    const missionRef = manifestScenario?.["missionRef"];
-    const sourcePath =
-      typeof missionRef === "string"
-        ? `benchmarks/detection-v1/${missionRef}`
-        : undefined;
-    const sourceDefinition =
-      sourcePath === undefined ? undefined : canonicalSources.get(sourcePath);
-    if (sourceDefinition === undefined) {
+    const canonicalBinding = canonicalScenarioBindings.get(scenarioId);
+    if (canonicalBinding === undefined) {
       throw new EvidenceValidationError(
         "BenchmarkSourceInvalid",
         `benchmark scenario ${scenarioId} has no selected-commit source`,
       );
     }
-    const canonicalDefinition = asRecord(
-      sourceDefinition,
-      `canonical benchmark scenario ${scenarioId}`,
-    );
-    const canonicalSeedUrl = new URL(
-      requireString(
-        canonicalDefinition,
-        "seedUrl",
-        `canonical benchmark scenario ${scenarioId}`,
-      ),
-    );
-    const expectedSeedUrl = {
-      origin: canonicalSeedUrl.origin,
-      pathname: canonicalSeedUrl.pathname,
-    };
-    const canonicalStates = requireArray(
-      canonicalDefinition,
-      "states",
-      `canonical benchmark scenario ${scenarioId}`,
-    );
-    const expectedStateBindings = canonicalStates.map((value, stateIndex) => {
-      const state = asRecord(
-        value,
-        `canonical benchmark scenario ${scenarioId} state ${stateIndex}`,
-      );
-      return {
-        id: state["id"],
-        advanceNodeId: state["advanceNodeId"] ?? null,
-        signals: state["signals"] ?? [],
-      };
-    });
-    const actualStateBindings = states.map((value, stateIndex) => {
-      const state = asRecord(
-        value,
-        `benchmark scenario definition ${scenarioId} state ${stateIndex}`,
-      );
-      return {
-        id: state["id"],
-        advanceNodeId: state["advanceNodeId"],
-        signals: state["signals"],
-      };
-    });
-    if (
-      canonicalDefinition["scenarioId"] !== scenarioId ||
-      canonicalDefinition["mode"] !== definition["mode"] ||
-      canonicalJson(definition["seedUrl"]) !== canonicalJson(expectedSeedUrl) ||
-      canonicalJson(actualStateBindings) !==
-        canonicalJson(expectedStateBindings)
-    ) {
+    if (canonicalJson(definition) !== canonicalJson(canonicalBinding)) {
       throw new EvidenceValidationError(
         "BenchmarkSourceInvalid",
         `benchmark runner binding for ${scenarioId} does not match its selected-commit scenario`,
@@ -3464,6 +3804,15 @@ function validateCompleteWindowsChecklist(
       "Windows checklist contains an unknown executable section",
     );
   }
+  if (
+    seenItemIds.size !== REQUIRED_WINDOWS_CHECKLIST_ITEM_IDS.length ||
+    REQUIRED_WINDOWS_CHECKLIST_ITEM_IDS.some((id) => !seenItemIds.has(id))
+  ) {
+    throw new EvidenceValidationError(
+      "WindowsEvidenceItemInvalid",
+      "Windows checklist does not contain the canonical versioned item ids",
+    );
+  }
   const conclusions = items
     .map((value) => asRecord(value, "Windows checklist conclusion"))
     .filter((item) => item["section"] === "17");
@@ -3549,6 +3898,89 @@ function releaseVerifierEnvironment(): NodeJS.ProcessEnv {
   return environment;
 }
 
+interface ReleaseVerifierInvocation {
+  readonly executable: string;
+  readonly args: readonly string[];
+  readonly cwd: string;
+  readonly env: NodeJS.ProcessEnv;
+  readonly signal?: AbortSignal;
+}
+
+type ReleaseVerifierRunner = (
+  invocation: ReleaseVerifierInvocation,
+) => Promise<void>;
+
+let releaseVerifierRunnerForTests: ReleaseVerifierRunner | undefined;
+
+export function setReleaseVerifierRunnerForTests(
+  runner: ReleaseVerifierRunner,
+): () => void {
+  if (process.env["NODE_ENV"] !== "test" || process.env["VITEST"] !== "true") {
+    throw new GraphFreezeFinalizationError(
+      "FinalizerInputInvalid",
+      "the release-verifier test seam is available only inside Vitest",
+    );
+  }
+  if (releaseVerifierRunnerForTests !== undefined) {
+    throw new GraphFreezeFinalizationError(
+      "FinalizerInputInvalid",
+      "the release-verifier test seam is already active",
+    );
+  }
+  releaseVerifierRunnerForTests = runner;
+  return () => {
+    releaseVerifierRunnerForTests = undefined;
+  };
+}
+
+async function runSelectedReleaseVerifier(
+  input: FinalizeGraphFreezeInput,
+  manifestPath: string,
+): Promise<void> {
+  const source = await repositoryFileAtCommit(
+    input,
+    "scripts/verify-release-manifest.mjs",
+    "ReleaseManifestVerifierInvalid",
+  );
+  const verifierPath = join(
+    dirname(manifestPath),
+    `.verify-release-manifest-${process.pid}-${randomUUID()}.mjs`,
+  );
+  await writeFile(verifierPath, source.text, { encoding: "utf8", flag: "wx" });
+  const invocation: ReleaseVerifierInvocation = {
+    executable: process.execPath,
+    args: [
+      verifierPath,
+      "verify",
+      "--manifest",
+      manifestPath,
+      "--repository",
+      input.repository,
+      "--commit",
+      input.commit,
+    ],
+    cwd: input.repositoryRoot,
+    env: releaseVerifierEnvironment(),
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
+  };
+  try {
+    const runner = releaseVerifierRunnerForTests;
+    if (runner === undefined) {
+      await execFileAsync(invocation.executable, [...invocation.args], {
+        cwd: invocation.cwd,
+        env: invocation.env,
+        maxBuffer: 4 * 1024 * 1024,
+        signal: invocation.signal,
+        timeout: 120_000,
+      });
+    } else {
+      await runner(invocation);
+    }
+  } finally {
+    await rm(verifierPath, { force: true });
+  }
+}
+
 async function validateReleaseManifestEvidence(
   value: unknown,
   input: FinalizeGraphFreezeInput,
@@ -3595,32 +4027,8 @@ async function validateReleaseManifestEvidence(
     );
   }
 
-  const verifierPath = join(
-    input.repositoryRoot,
-    "scripts",
-    "verify-release-manifest.mjs",
-  );
   try {
-    await execFileAsync(
-      process.execPath,
-      [
-        verifierPath,
-        "verify",
-        "--manifest",
-        manifestPath,
-        "--repository",
-        input.repository,
-        "--commit",
-        input.commit,
-      ],
-      {
-        cwd: input.repositoryRoot,
-        env: releaseVerifierEnvironment(),
-        maxBuffer: 4 * 1024 * 1024,
-        signal: input.signal,
-        timeout: 120_000,
-      },
-    );
+    await runSelectedReleaseVerifier(input, manifestPath);
   } catch (error) {
     if (
       input.signal?.aborted === true ||
