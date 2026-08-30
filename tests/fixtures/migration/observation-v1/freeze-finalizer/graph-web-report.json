@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "qualigence-graph-conformance-target-report/v1",
+  "repository": "ljie-PI/Qualigence",
+  "version": "v0.1.0-candidate",
+  "commit": "1e3be71ec89391f34654c48e69e3fb233c4e6252",
+  "generatedAt": "2026-08-30T07:08:00.000Z",
+  "evidenceClass": "real",
+  "target": "web",
+  "status": "passed",
+  "graphSchemaVersion": "observation-graph/v1",
+  "sharedCoreFields": ["role", "name", "value", "state", "relations"],
+  "command": "corepack pnpm vitest run tests/conformance/observation tests/e2e/web-execution/graph-v1-producer.test.ts"
+}

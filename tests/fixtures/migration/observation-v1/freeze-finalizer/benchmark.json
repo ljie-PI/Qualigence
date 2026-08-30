@@ -1,0 +1,444 @@
+{
+  "schemaVersion": "qualigence-benchmark-evidence/v1",
+  "repository": "ljie-PI/Qualigence",
+  "version": "v0.1.0-candidate",
+  "commit": "1e3be71ec89391f34654c48e69e3fb233c4e6252",
+  "generatedAt": "2026-08-30T07:30:00.000Z",
+  "evidenceClass": "real",
+  "sourceFiles": [
+    {
+      "path": "benchmarks/detection-v1/manifest.json",
+      "sha256": "7b8ce8965c0368aa0bc07ae52a1ece939dafd8bde7fc697f9a62e9e70264fbe0"
+    },
+    {
+      "path": "benchmarks/detection-v1/ground-truth/cart.json",
+      "sha256": "ff45bf6717650455d0ad59758d744838654b640a1e8b96f384050be13c8aa3dd"
+    },
+    {
+      "path": "benchmarks/detection-v1/scenarios/cart-normal.json",
+      "sha256": "726560044dacff004f2fcfd0548869c0002044708cc35b3dd309e8ff5673e8cf"
+    },
+    {
+      "path": "benchmarks/detection-v1/scenarios/cart-known-bugs.json",
+      "sha256": "fb3dace5943da45a7931d9be0d8a8c79c645622196c68ed42c9629d2524d1684"
+    }
+  ],
+  "manifest": {
+    "schemaVersion": "detection-benchmark/v1",
+    "benchmarkVersion": "detection-v1",
+    "referenceProfile": {
+      "profileId": "detection-reference-v1",
+      "providerId": "openai-compatible",
+      "modelId": "qualigence-reference-detector-1",
+      "promptVersion": "prompt/2026-08-01",
+      "policyBundleSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "skillPackSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "browserVersion": "chromium/reference-profile",
+      "fixtureVersions": {
+        "cart": "cart/1.0.0"
+      },
+      "maximumSteps": 40,
+      "maximumWallClockMs": 1800000,
+      "maximumModelTokens": 200000,
+      "repetitions": 3
+    },
+    "scenarios": [
+      {
+        "scenarioId": "cart-normal",
+        "fixtureId": "cart",
+        "fixtureVersion": "cart/1.0.0",
+        "mode": "normal",
+        "missionRef": "scenarios/cart-normal.json",
+        "groundTruthRef": "ground-truth/cart.json",
+        "expectedDefectIds": []
+      },
+      {
+        "scenarioId": "cart-known-bugs",
+        "fixtureId": "cart",
+        "fixtureVersion": "cart/1.0.0",
+        "mode": "fault",
+        "missionRef": "scenarios/cart-known-bugs.json",
+        "groundTruthRef": "ground-truth/cart.json",
+        "expectedDefectIds": [
+          "cart-price-mismatch",
+          "cart-quantity-overflow",
+          "cart-discount-not-applied",
+          "cart-total-rounding",
+          "cart-checkout-500"
+        ]
+      }
+    ],
+    "thresholds": {
+      "p0RecallMinimum": 1,
+      "knownBugRecallMinimum": 0.8,
+      "findingPrecisionMinimum": 0.6,
+      "stableReproductionRateMinimum": 0.7,
+      "maximumHighConfidenceFalsePositivesPerNormalMission": 1
+    }
+  },
+  "groundTruth": {
+    "benchmarkVersion": "detection-v1",
+    "defects": [
+      {
+        "scenarioId": "cart-known-bugs",
+        "defectId": "cart-price-mismatch",
+        "severity": "P0",
+        "stable": true
+      },
+      {
+        "scenarioId": "cart-known-bugs",
+        "defectId": "cart-quantity-overflow",
+        "severity": "P1",
+        "stable": true
+      },
+      {
+        "scenarioId": "cart-known-bugs",
+        "defectId": "cart-discount-not-applied",
+        "severity": "P1",
+        "stable": true
+      },
+      {
+        "scenarioId": "cart-known-bugs",
+        "defectId": "cart-total-rounding",
+        "severity": "P2",
+        "stable": true
+      },
+      {
+        "scenarioId": "cart-known-bugs",
+        "defectId": "cart-checkout-500",
+        "severity": "P1",
+        "stable": false
+      }
+    ]
+  },
+  "runnerInputs": {
+    "policy": {
+      "seedSkillBundleIds": [],
+      "allowedActionKinds": ["navigate", "click", "input"],
+      "allowedOrigins": ["https://shop.fixture.local"],
+      "maximumSteps": 40,
+      "maximumWallClockMs": 1800000,
+      "maximumModelTokens": 200000,
+      "maximumStateVisits": 40,
+      "maximumRecoveries": 0,
+      "riskCeiling": "RecoverableMutation"
+    },
+    "scenarioDefinitions": [
+      {
+        "scenarioId": "cart-normal",
+        "mode": "normal",
+        "seedUrl": {
+          "origin": "https://shop.fixture.local",
+          "pathname": "/cart"
+        },
+        "states": [
+          {
+            "id": "cart",
+            "advanceNodeId": "go-checkout",
+            "signals": [],
+            "observationGraphSha256": "b736a1b69000e20ce3cd90f8e1a59ef27abaaeae9bb339119d0e404714937146"
+          },
+          {
+            "id": "checkout",
+            "advanceNodeId": "go-confirm",
+            "signals": [],
+            "observationGraphSha256": "cb30c532036a96c3d9baa848670c8aa9fa468c96dde59e5b1b9b8ea1f26d77bc"
+          },
+          {
+            "id": "confirmation",
+            "advanceNodeId": null,
+            "signals": [],
+            "observationGraphSha256": "23c0c5746e9a62102ae439e345986ca8dd8556c6ffb40b6dc5e4d653dbb8b43b"
+          }
+        ]
+      },
+      {
+        "scenarioId": "cart-known-bugs",
+        "mode": "fault",
+        "seedUrl": {
+          "origin": "https://shop.fixture.local",
+          "pathname": "/cart"
+        },
+        "states": [
+          {
+            "id": "cart",
+            "advanceNodeId": "go-checkout",
+            "signals": [
+              {
+                "defectId": "cart-price-mismatch",
+                "confidence": "high"
+              },
+              {
+                "defectId": "cart-quantity-overflow",
+                "confidence": "high"
+              }
+            ],
+            "observationGraphSha256": "051da9cc80e67d9da626beffb2aea2ec7eca2fc6e39eaaacfd7068fddb858b6e"
+          },
+          {
+            "id": "checkout",
+            "advanceNodeId": "go-confirm",
+            "signals": [
+              {
+                "defectId": "cart-discount-not-applied",
+                "confidence": "high"
+              },
+              {
+                "defectId": "cart-total-rounding",
+                "confidence": "high"
+              }
+            ],
+            "observationGraphSha256": "f9b98e9cd07b17f61e9fccb5434f9503c4e960cf0c50465c6f2748dc82ef3ffa"
+          },
+          {
+            "id": "confirmation",
+            "advanceNodeId": null,
+            "signals": [
+              {
+                "defectId": "cart-checkout-500",
+                "confidence": "high"
+              }
+            ],
+            "observationGraphSha256": "a452e2a1e4832f935de1433b02aa4413609c4e15815fa2ac617a506b130f0ad4"
+          }
+        ]
+      }
+    ]
+  },
+  "report": {
+    "reportId": "801cfcc999d3db1e5671bfa5b4cc3d2c57fb2779c34e2ad983a5ddb5a186316d",
+    "benchmarkVersion": "detection-v1",
+    "manifestSha256": "c95bf01310a636f6662e7dee912436c4b150eff8593003bde326d9768ae5992b",
+    "profileSha256": "426b19246d2fa3f4edf0ccb3a7c0ae462958e37f9c60c241a856202f8a389099",
+    "groundTruthSha256": "39010dc7b9f20d8f7e3a052098ac58363d0cdcdb299ace10b9363227156b3bf2",
+    "inputSha256": "e80e2eb8f3f3b08c87386073c1f9317f55d2c4ca96c78c2c1c2352f67b75a60f",
+    "profileStatus": "reference",
+    "attemptIds": [
+      "71a40be56a64cc4cd7c40d85503c410a01bd1cf5f30c141825303e9a88d07be0:15f9ced1e27488e44c6e336a872881c37b32151eb224c6c2281e1cac58ddd428",
+      "71a40be56a64cc4cd7c40d85503c410a01bd1cf5f30c141825303e9a88d07be0:26881c0e9a7afaf30bf83dfd0aeed2ad616c4434b3505e447d8b895ceba4de65",
+      "71a40be56a64cc4cd7c40d85503c410a01bd1cf5f30c141825303e9a88d07be0:629a409ae56d3ca7241c7a16b3eb986200ac315fbeb4c815faffc0630444f7b4",
+      "71a40be56a64cc4cd7c40d85503c410a01bd1cf5f30c141825303e9a88d07be0:639af55e0c42233fabc0e6959b39e7d9e5e6e5b1116d51337d231be2d884921f",
+      "71a40be56a64cc4cd7c40d85503c410a01bd1cf5f30c141825303e9a88d07be0:92e453cb788938dab3016881765bebc828f6440ea0f281d319442de07338235f",
+      "71a40be56a64cc4cd7c40d85503c410a01bd1cf5f30c141825303e9a88d07be0:c033451a1ac3f54dc3012d670a2e15a3149190ed9c1b26e9191f321b53bfaae0"
+    ],
+    "attemptBindingSha256s": [
+      "15f9ced1e27488e44c6e336a872881c37b32151eb224c6c2281e1cac58ddd428",
+      "26881c0e9a7afaf30bf83dfd0aeed2ad616c4434b3505e447d8b895ceba4de65",
+      "629a409ae56d3ca7241c7a16b3eb986200ac315fbeb4c815faffc0630444f7b4",
+      "639af55e0c42233fabc0e6959b39e7d9e5e6e5b1116d51337d231be2d884921f",
+      "92e453cb788938dab3016881765bebc828f6440ea0f281d319442de07338235f",
+      "c033451a1ac3f54dc3012d670a2e15a3149190ed9c1b26e9191f321b53bfaae0"
+    ],
+    "metrics": {
+      "p0Recall": {
+        "numerator": 1,
+        "denominator": 1,
+        "value": 1
+      },
+      "knownBugRecall": {
+        "numerator": 5,
+        "denominator": 5,
+        "value": 1
+      },
+      "findingPrecision": {
+        "numerator": 15,
+        "denominator": 15,
+        "value": 1
+      },
+      "stableReproductionRate": {
+        "numerator": 12,
+        "denominator": 12,
+        "value": 1
+      },
+      "highConfidenceFalsePositivesByNormalMission": {
+        "cart-normal": 0
+      }
+    },
+    "gate": {
+      "status": "passed",
+      "failureCodes": []
+    },
+    "createdAt": "2026-08-30T07:25:00.000Z"
+  },
+  "attempts": [
+    {
+      "attemptId": "71a40be56a64cc4cd7c40d85503c410a01bd1cf5f30c141825303e9a88d07be0:629a409ae56d3ca7241c7a16b3eb986200ac315fbeb4c815faffc0630444f7b4",
+      "bindingSha256": "629a409ae56d3ca7241c7a16b3eb986200ac315fbeb4c815faffc0630444f7b4",
+      "profileSha256": "426b19246d2fa3f4edf0ccb3a7c0ae462958e37f9c60c241a856202f8a389099",
+      "scenarioId": "cart-normal",
+      "mode": "normal",
+      "repetition": 1,
+      "findings": [],
+      "invocationIds": ["benchmark-invocation-1"]
+    },
+    {
+      "attemptId": "71a40be56a64cc4cd7c40d85503c410a01bd1cf5f30c141825303e9a88d07be0:15f9ced1e27488e44c6e336a872881c37b32151eb224c6c2281e1cac58ddd428",
+      "bindingSha256": "15f9ced1e27488e44c6e336a872881c37b32151eb224c6c2281e1cac58ddd428",
+      "profileSha256": "426b19246d2fa3f4edf0ccb3a7c0ae462958e37f9c60c241a856202f8a389099",
+      "scenarioId": "cart-normal",
+      "mode": "normal",
+      "repetition": 2,
+      "findings": [],
+      "invocationIds": ["benchmark-invocation-2"]
+    },
+    {
+      "attemptId": "71a40be56a64cc4cd7c40d85503c410a01bd1cf5f30c141825303e9a88d07be0:c033451a1ac3f54dc3012d670a2e15a3149190ed9c1b26e9191f321b53bfaae0",
+      "bindingSha256": "c033451a1ac3f54dc3012d670a2e15a3149190ed9c1b26e9191f321b53bfaae0",
+      "profileSha256": "426b19246d2fa3f4edf0ccb3a7c0ae462958e37f9c60c241a856202f8a389099",
+      "scenarioId": "cart-normal",
+      "mode": "normal",
+      "repetition": 3,
+      "findings": [],
+      "invocationIds": ["benchmark-invocation-3"]
+    },
+    {
+      "attemptId": "71a40be56a64cc4cd7c40d85503c410a01bd1cf5f30c141825303e9a88d07be0:639af55e0c42233fabc0e6959b39e7d9e5e6e5b1116d51337d231be2d884921f",
+      "bindingSha256": "639af55e0c42233fabc0e6959b39e7d9e5e6e5b1116d51337d231be2d884921f",
+      "profileSha256": "426b19246d2fa3f4edf0ccb3a7c0ae462958e37f9c60c241a856202f8a389099",
+      "scenarioId": "cart-known-bugs",
+      "mode": "fault",
+      "repetition": 1,
+      "findings": [
+        {
+          "defectId": "cart-price-mismatch",
+          "confidence": "high"
+        },
+        {
+          "defectId": "cart-quantity-overflow",
+          "confidence": "high"
+        },
+        {
+          "defectId": "cart-discount-not-applied",
+          "confidence": "high"
+        },
+        {
+          "defectId": "cart-total-rounding",
+          "confidence": "high"
+        },
+        {
+          "defectId": "cart-checkout-500",
+          "confidence": "high"
+        }
+      ],
+      "invocationIds": ["benchmark-invocation-4"]
+    },
+    {
+      "attemptId": "71a40be56a64cc4cd7c40d85503c410a01bd1cf5f30c141825303e9a88d07be0:26881c0e9a7afaf30bf83dfd0aeed2ad616c4434b3505e447d8b895ceba4de65",
+      "bindingSha256": "26881c0e9a7afaf30bf83dfd0aeed2ad616c4434b3505e447d8b895ceba4de65",
+      "profileSha256": "426b19246d2fa3f4edf0ccb3a7c0ae462958e37f9c60c241a856202f8a389099",
+      "scenarioId": "cart-known-bugs",
+      "mode": "fault",
+      "repetition": 2,
+      "findings": [
+        {
+          "defectId": "cart-price-mismatch",
+          "confidence": "high"
+        },
+        {
+          "defectId": "cart-quantity-overflow",
+          "confidence": "high"
+        },
+        {
+          "defectId": "cart-discount-not-applied",
+          "confidence": "high"
+        },
+        {
+          "defectId": "cart-total-rounding",
+          "confidence": "high"
+        },
+        {
+          "defectId": "cart-checkout-500",
+          "confidence": "high"
+        }
+      ],
+      "invocationIds": ["benchmark-invocation-5"]
+    },
+    {
+      "attemptId": "71a40be56a64cc4cd7c40d85503c410a01bd1cf5f30c141825303e9a88d07be0:92e453cb788938dab3016881765bebc828f6440ea0f281d319442de07338235f",
+      "bindingSha256": "92e453cb788938dab3016881765bebc828f6440ea0f281d319442de07338235f",
+      "profileSha256": "426b19246d2fa3f4edf0ccb3a7c0ae462958e37f9c60c241a856202f8a389099",
+      "scenarioId": "cart-known-bugs",
+      "mode": "fault",
+      "repetition": 3,
+      "findings": [
+        {
+          "defectId": "cart-price-mismatch",
+          "confidence": "high"
+        },
+        {
+          "defectId": "cart-quantity-overflow",
+          "confidence": "high"
+        },
+        {
+          "defectId": "cart-discount-not-applied",
+          "confidence": "high"
+        },
+        {
+          "defectId": "cart-total-rounding",
+          "confidence": "high"
+        },
+        {
+          "defectId": "cart-checkout-500",
+          "confidence": "high"
+        }
+      ],
+      "invocationIds": ["benchmark-invocation-6"]
+    }
+  ],
+  "invocations": [
+    {
+      "invocationId": "benchmark-invocation-1",
+      "attemptId": "71a40be56a64cc4cd7c40d85503c410a01bd1cf5f30c141825303e9a88d07be0:629a409ae56d3ca7241c7a16b3eb986200ac315fbeb4c815faffc0630444f7b4",
+      "status": "succeeded",
+      "usageStatus": "known",
+      "inputTokens": 1000,
+      "outputTokens": 100,
+      "totalTokens": 1100
+    },
+    {
+      "invocationId": "benchmark-invocation-2",
+      "attemptId": "71a40be56a64cc4cd7c40d85503c410a01bd1cf5f30c141825303e9a88d07be0:15f9ced1e27488e44c6e336a872881c37b32151eb224c6c2281e1cac58ddd428",
+      "status": "succeeded",
+      "usageStatus": "known",
+      "inputTokens": 1000,
+      "outputTokens": 100,
+      "totalTokens": 1100
+    },
+    {
+      "invocationId": "benchmark-invocation-3",
+      "attemptId": "71a40be56a64cc4cd7c40d85503c410a01bd1cf5f30c141825303e9a88d07be0:c033451a1ac3f54dc3012d670a2e15a3149190ed9c1b26e9191f321b53bfaae0",
+      "status": "succeeded",
+      "usageStatus": "known",
+      "inputTokens": 1000,
+      "outputTokens": 100,
+      "totalTokens": 1100
+    },
+    {
+      "invocationId": "benchmark-invocation-4",
+      "attemptId": "71a40be56a64cc4cd7c40d85503c410a01bd1cf5f30c141825303e9a88d07be0:639af55e0c42233fabc0e6959b39e7d9e5e6e5b1116d51337d231be2d884921f",
+      "status": "succeeded",
+      "usageStatus": "known",
+      "inputTokens": 1000,
+      "outputTokens": 100,
+      "totalTokens": 1100
+    },
+    {
+      "invocationId": "benchmark-invocation-5",
+      "attemptId": "71a40be56a64cc4cd7c40d85503c410a01bd1cf5f30c141825303e9a88d07be0:26881c0e9a7afaf30bf83dfd0aeed2ad616c4434b3505e447d8b895ceba4de65",
+      "status": "succeeded",
+      "usageStatus": "known",
+      "inputTokens": 1000,
+      "outputTokens": 100,
+      "totalTokens": 1100
+    },
+    {
+      "invocationId": "benchmark-invocation-6",
+      "attemptId": "71a40be56a64cc4cd7c40d85503c410a01bd1cf5f30c141825303e9a88d07be0:92e453cb788938dab3016881765bebc828f6440ea0f281d319442de07338235f",
+      "status": "succeeded",
+      "usageStatus": "known",
+      "inputTokens": 1000,
+      "outputTokens": 100,
+      "totalTokens": 1100
+    }
+  ]
+}

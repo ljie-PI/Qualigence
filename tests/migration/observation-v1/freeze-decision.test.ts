@@ -3,6 +3,7 @@ import {
   buildFreezeReport,
   decideGraphFreeze,
   REQUIRED_SECURITY_VETO_ITEM_IDS,
+  REQUIRED_WINDOWS_CHECKLIST_ITEM_IDS,
   REQUIRED_SHARED_CORE_FIELDS,
   WINDOWS_M3_CHECKLIST_VERSION,
   type ObservationFreezeReportV1,
@@ -46,13 +47,16 @@ function dirtyCandidateReport(): ObservationFreezeReportV1 {
   );
 }
 
-/** Every required security-veto item, all passing. */
+/** Every versioned checklist item, including all passing security vetoes. */
 function passingVetoItems(): WindowsChecklistItemEvidence[] {
-  return REQUIRED_SECURITY_VETO_ITEM_IDS.map((id) => ({
-    section: "16",
+  return REQUIRED_WINDOWS_CHECKLIST_ITEM_IDS.map((id) => ({
+    section: id.split(".")[0] ?? "",
     id,
-    description: `security veto ${id}`,
-    result: "pass" as const,
+    description: `checklist item ${id}`,
+    result:
+      id.startsWith("17.") && id !== "17.item-1"
+        ? ("not_applicable" as const)
+        : ("pass" as const),
   }));
 }
 
@@ -62,7 +66,7 @@ function validWindowsChecklistEvidence(
   return {
     checklistVersion: WINDOWS_M3_CHECKLIST_VERSION,
     productVersion: "2026.08.02",
-    runnerProtocolVersion: "runner-protocol/1",
+    runnerProtocolVersion: "runner-protocol/v1",
     windowsBuild: "26100.1742",
     interactiveSessionType: "local",
     operatorName: "Grace Hopper",
@@ -125,6 +129,24 @@ describe("decideGraphFreeze", () => {
     expect(decision.signoff).toBeUndefined();
   });
 
+  it("stays candidate when one identity signs as both operator and reviewer", () => {
+    const decision = decideGraphFreeze(
+      cleanCandidateReport(),
+      validWindowsChecklistEvidence({
+        operatorName: "Same Human",
+        reviewerName: "Same Human",
+      }),
+      validSchemaConformanceEvidence(),
+      NOW,
+    );
+
+    expect(decision.status).toBe("candidate");
+    expect(decision.inputs.windowsChecklistValid).toBe(false);
+    expect(decision.blockingReasons).toContain(
+      "Windows checklist operator and reviewer must be distinct",
+    );
+  });
+
   it("stays candidate when the schema conformance evidence is missing", () => {
     const decision = decideGraphFreeze(
       cleanCandidateReport(),
@@ -149,6 +171,41 @@ describe("decideGraphFreeze", () => {
     expect(decision.inputs.candidateReportValid).toBe(false);
   });
 
+  it("stays candidate when the candidate report timestamp is future-dated", () => {
+    const report = {
+      ...cleanCandidateReport(),
+      generatedAt: "2026-08-03T00:00:00.000Z",
+    };
+    const decision = decideGraphFreeze(
+      report,
+      validWindowsChecklistEvidence(),
+      validSchemaConformanceEvidence(),
+      NOW,
+    );
+
+    expect(decision.status).toBe("candidate");
+    expect(decision.inputs.candidateReportValid).toBe(false);
+    expect(decision.blockingReasons).toContain(
+      "candidate Freeze Report has no valid non-future timestamp",
+    );
+  });
+
+  it("stays candidate when the candidate report timestamp is not canonical ISO", () => {
+    const report = {
+      ...cleanCandidateReport(),
+      generatedAt: "August 2, 2026",
+    };
+    const decision = decideGraphFreeze(
+      report,
+      validWindowsChecklistEvidence(),
+      validSchemaConformanceEvidence(),
+      NOW,
+    );
+
+    expect(decision.status).toBe("candidate");
+    expect(decision.inputs.candidateReportValid).toBe(false);
+  });
+
   it("stays candidate when any required security-veto item did not pass", () => {
     const items = passingVetoItems();
     items[0] = { ...items[0]!, result: "fail" };
@@ -161,7 +218,9 @@ describe("decideGraphFreeze", () => {
 
     expect(decision.status).toBe("candidate");
     expect(decision.inputs.windowsChecklistValid).toBe(false);
-    expect(decision.blockingReasons.some((r) => r.includes(items[0]!.id))).toBe(true);
+    expect(decision.blockingReasons.some((r) => r.includes(items[0]!.id))).toBe(
+      true,
+    );
   });
 
   it("stays candidate when a required security-veto item is absent from the evidence", () => {
@@ -177,16 +236,75 @@ describe("decideGraphFreeze", () => {
     expect(decision.inputs.windowsChecklistValid).toBe(false);
   });
 
-  it("stays candidate when the checklist is signed with the wrong version", () => {
+  it("stays candidate when a checklist item identity is substituted", () => {
+    const items = passingVetoItems();
+    items[0] = { ...items[0]!, id: "3.substituted" };
     const decision = decideGraphFreeze(
       cleanCandidateReport(),
-      validWindowsChecklistEvidence({ checklistVersion: "windows-m3-manual-checklist/v0" }),
+      validWindowsChecklistEvidence({ items }),
       validSchemaConformanceEvidence(),
       NOW,
     );
 
     expect(decision.status).toBe("candidate");
     expect(decision.inputs.windowsChecklistValid).toBe(false);
+  });
+
+  it("stays candidate when checklist item ids are swapped across sections", () => {
+    const items = passingVetoItems();
+    const firstIndex = items.findIndex((item) => item.section === "3");
+    const secondIndex = items.findIndex((item) => item.section === "4");
+    const first = items[firstIndex];
+    const second = items[secondIndex];
+    if (first === undefined || second === undefined) {
+      throw new Error("checklist fixture is missing sections 3 or 4");
+    }
+    items[firstIndex] = { ...first, id: second.id };
+    items[secondIndex] = { ...second, id: first.id };
+
+    const decision = decideGraphFreeze(
+      cleanCandidateReport(),
+      validWindowsChecklistEvidence({ items }),
+      validSchemaConformanceEvidence(),
+      NOW,
+    );
+
+    expect(decision.status).toBe("candidate");
+    expect(decision.inputs.windowsChecklistValid).toBe(false);
+    expect(decision.blockingReasons).toContain(
+      `checklist item ${second.id} does not belong to section ${first.section}`,
+    );
+  });
+
+  it("stays candidate when the checklist is signed with the wrong version", () => {
+    const decision = decideGraphFreeze(
+      cleanCandidateReport(),
+      validWindowsChecklistEvidence({
+        checklistVersion: "windows-m3-manual-checklist/v0",
+      }),
+      validSchemaConformanceEvidence(),
+      NOW,
+    );
+
+    expect(decision.status).toBe("candidate");
+    expect(decision.inputs.windowsChecklistValid).toBe(false);
+  });
+
+  it("stays candidate when the checklist binds an incompatible Runner protocol", () => {
+    const decision = decideGraphFreeze(
+      cleanCandidateReport(),
+      validWindowsChecklistEvidence({
+        runnerProtocolVersion: "runner-protocol/v2",
+      }),
+      validSchemaConformanceEvidence(),
+      NOW,
+    );
+
+    expect(decision.status).toBe("candidate");
+    expect(decision.inputs.windowsChecklistValid).toBe(false);
+    expect(decision.blockingReasons).toContain(
+      "Windows checklist does not bind runner-protocol/v1",
+    );
   });
 
   it("stays candidate when the checklist lacks an operator or reviewer signature", () => {

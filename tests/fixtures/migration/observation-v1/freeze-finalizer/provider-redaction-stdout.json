@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "qualigence-provider-redaction-scan/v1",
+  "repository": "ljie-PI/Qualigence",
+  "version": "v0.1.0-candidate",
+  "commit": "1e3be71ec89391f34654c48e69e3fb233c4e6252",
+  "generatedAt": "2026-08-30T07:29:00.000Z",
+  "evidenceClass": "real",
+  "scope": "stdout",
+  "status": "clean",
+  "scannedArtifactSha256": "de74c00d04fd2069d3f330116ee1e91d5c23384f24a661493f5779e831a44ac6",
+  "scannedArtifact": {
+    "path": "artifacts/release/v0.1.0-candidate/provider-output-stdout.json",
+    "sha256": "de74c00d04fd2069d3f330116ee1e91d5c23384f24a661493f5779e831a44ac6"
+  }
+}

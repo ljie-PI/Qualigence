@@ -1,0 +1,28 @@
+{
+  "schemaVersion": "qualigence-provider-smoke-report/v1",
+  "repository": "ljie-PI/Qualigence",
+  "version": "v0.1.0-candidate",
+  "commit": "1e3be71ec89391f34654c48e69e3fb233c4e6252",
+  "generatedAt": "2026-08-30T07:29:00.000Z",
+  "evidenceClass": "real",
+  "provider": {
+    "id": "openai-compatible",
+    "model": "qualigence-reference-detector-1"
+  },
+  "result": {
+    "status": "succeeded",
+    "terminal": true
+  },
+  "invocationCount": 1,
+  "invocations": [
+    {
+      "invocationId": "provider-smoke-1",
+      "status": "succeeded",
+      "usageStatus": "known",
+      "inputTokens": 40,
+      "outputTokens": 12,
+      "totalTokens": 52,
+      "providerRequestId": "request-redacted-1"
+    }
+  ]
+}

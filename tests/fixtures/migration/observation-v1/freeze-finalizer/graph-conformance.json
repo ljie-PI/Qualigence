@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "qualigence-graph-conformance-evidence/v1",
+  "repository": "ljie-PI/Qualigence",
+  "version": "v0.1.0-candidate",
+  "commit": "1e3be71ec89391f34654c48e69e3fb233c4e6252",
+  "generatedAt": "2026-08-30T07:10:00.000Z",
+  "evidenceClass": "real",
+  "web": {
+    "path": "artifacts/release/v0.1.0-candidate/graph-web-report.json",
+    "sha256": "905eaea9d0548e6affe55ac7b5647583f9a511d4e059732ee82f536a25541fb6"
+  },
+  "desktop": {
+    "path": "artifacts/release/v0.1.0-candidate/graph-desktop-report.json",
+    "sha256": "c1bde8bf3353d6046987f56ce28fac2cf18308f973b77d358b1875c3c9bf75f6"
+  },
+  "capabilityNegotiation": {
+    "path": "artifacts/release/v0.1.0-candidate/graph-negotiation-report.json",
+    "sha256": "7c99433f6ca67b9e50225611f94d8570868f25e2db1af550cf8f3878218d7f93"
+  }
+}

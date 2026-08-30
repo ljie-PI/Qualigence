@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "qualigence-windows-named-pipe-authority/v1",
+  "repository": "ljie-PI/Qualigence",
+  "version": "v0.1.0-candidate",
+  "commit": "1e3be71ec89391f34654c48e69e3fb233c4e6252",
+  "generatedAt": "2026-08-30T07:18:00.000Z",
+  "evidenceClass": "real",
+  "name": "ticket-29-named-pipe",
+  "environment": "windows-11-native",
+  "status": "passed",
+  "command": "corepack pnpm vitest run tests/e2e/windows/named-pipe-authority.test.ts"
+}

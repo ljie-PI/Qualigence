@@ -1,0 +1,24 @@
+{
+  "schemaVersion": "qualigence-native-reports-evidence/v1",
+  "repository": "ljie-PI/Qualigence",
+  "version": "v0.1.0-candidate",
+  "commit": "1e3be71ec89391f34654c48e69e3fb233c4e6252",
+  "generatedAt": "2026-08-30T07:20:00.000Z",
+  "evidenceClass": "real",
+  "reports": [
+    {
+      "name": "ticket-29-named-pipe",
+      "report": {
+        "path": "artifacts/release/v0.1.0-candidate/native-ticket-29-report.json",
+        "sha256": "43e752490e2a8987c1d3d3ef274f721a5bc92d96a85c400e6b9e67f935ab393d"
+      }
+    },
+    {
+      "name": "ticket-30-uia-companion",
+      "report": {
+        "path": "artifacts/release/v0.1.0-candidate/native-ticket-30-report.json",
+        "sha256": "0304b894aed3f4257c90b17f810890bf2767e1f991dc6a81b558be9a825bd97f"
+      }
+    }
+  ]
+}
