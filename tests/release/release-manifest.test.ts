@@ -29,6 +29,28 @@ const requiredSecurityVetoIds = [
   "16.unknown-side-effect-not-replayed",
 ];
 
+function buildGateArchive(name: string, archiveCommit = commit) {
+  const vitest = JSON.stringify({ numPassedTests: 1, numFailedTests: 0, numPendingTests: 0, numTodoTests: 0 }) + "\n";
+  const report = JSON.stringify({ schemaVersion: "qualigence-gate-report/v1", gate: name, commit: archiveCommit, command: ["pnpm", "vitest", "run"], selection: ["tests"], counts: { passed: 1, failed: 0, skipped: 0, todo: 0 }, status: "passed", environment: {}, files: [{ path: "vitest.json", sha256: sha256(vitest), bytes: Buffer.byteLength(vitest) }] }, null, 2) + "\n";
+  const marker = JSON.stringify({ schemaVersion: "qualigence-gate-accepted/v1", gate: name, commit: archiveCommit, report: "report.json", reportSha256: sha256(report), status: "accepted" }, null, 2) + "\n";
+  const hashManifest = `${sha256(report)}  ${name}/report.json\n${sha256(marker)}  ${name}/accepted.json\n${sha256(vitest)}  ${name}/vitest.json\n`;
+  const receipt = JSON.stringify({ schemaVersion: "qualigence-gate-artifact-receipt/v1", gate: name, commit: archiveCommit, report: `${name}/report.json`, reportSha256: sha256(report), marker: `${name}/accepted.json`, markerSha256: sha256(marker), hashManifest: "sha256.txt", hashManifestSha256: sha256(hashManifest) }, null, 2) + "\n";
+  const bytes = zipStore({
+    "receipt.json": receipt,
+    [`${name}/report.json`]: report,
+    [`${name}/accepted.json`]: marker,
+    [`${name}/vitest.json`]: vitest,
+    "sha256.txt": hashManifest,
+  });
+  return {
+    bytes,
+    archiveSha256: sha256(bytes),
+    reportSha256: sha256(report),
+    vitestSha256: sha256(vitest),
+    receiptSha256: sha256(receipt),
+  };
+}
+
 async function writeFixture() {
   const version = `test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const root = join(process.cwd(), "artifacts", "release", version);
@@ -80,20 +102,9 @@ async function writeFixture() {
   const gateArchives = new Map<string, { path: string; sha256: string; reportSha256: string; vitestSha256: string; receiptSha256: string }>();
   for (const name of ["gate-linux", "gate-windows-rust", "gate-self-hosted", "browser-e2e"]) {
     const archivePath = `${fixturePrefix}/gates/${name}.zip`;
-    const vitest = JSON.stringify({ numPassedTests: 1, numFailedTests: 0, numPendingTests: 0, numTodoTests: 0 }) + "\n";
-    const report = JSON.stringify({ schemaVersion: "qualigence-gate-report/v1", gate: name, commit, command: ["pnpm", "vitest", "run"], selection: ["tests"], counts: { passed: 1, failed: 0, skipped: 0, todo: 0 }, status: "passed", environment: {}, files: [{ path: "vitest.json", sha256: sha256(vitest), bytes: Buffer.byteLength(vitest) }] }, null, 2) + "\n";
-    const marker = JSON.stringify({ schemaVersion: "qualigence-gate-accepted/v1", gate: name, commit, report: "report.json", reportSha256: sha256(report), status: "accepted" }, null, 2) + "\n";
-    const hashManifest = `${sha256(report)}  ${name}/report.json\n${sha256(marker)}  ${name}/accepted.json\n${sha256(vitest)}  ${name}/vitest.json\n`;
-    const receipt = JSON.stringify({ schemaVersion: "qualigence-gate-artifact-receipt/v1", gate: name, commit, report: `${name}/report.json`, reportSha256: sha256(report), marker: `${name}/accepted.json`, markerSha256: sha256(marker), hashManifest: "sha256.txt", hashManifestSha256: sha256(hashManifest) }, null, 2) + "\n";
-    const archiveBytes = zipStore({
-      "receipt.json": receipt,
-      [`${name}/report.json`]: report,
-      [`${name}/accepted.json`]: marker,
-      [`${name}/vitest.json`]: vitest,
-      "sha256.txt": hashManifest,
-    });
-    await writeFile(join(process.cwd(), archivePath), archiveBytes);
-    gateArchives.set(name, { path: archivePath, sha256: sha256(archiveBytes), reportSha256: sha256(report), vitestSha256: sha256(vitest), receiptSha256: sha256(receipt) });
+    const archive = buildGateArchive(name);
+    await writeFile(join(process.cwd(), archivePath), archive.bytes);
+    gateArchives.set(name, { path: archivePath, sha256: archive.archiveSha256, reportSha256: archive.reportSha256, vitestSha256: archive.vitestSha256, receiptSha256: archive.receiptSha256 });
   }
   const gateDeliveries = ["gate-linux", "gate-windows-rust", "gate-self-hosted", "browser-e2e"].map((name, index) => ({
     gate: name,
@@ -321,6 +332,23 @@ describe("release manifest verifier", () => {
     await expect(runVerifier(manifestPath, process.cwd())).rejects.toMatchObject({ stderr: expect.stringContaining("GateArtifactPathInvalid") });
   });
 
+  it("rejects absolute and traversing Gate artifact paths in the schema and verifier", async () => {
+    const schema = JSON.parse(await readFile("deployments/self-hosted/compose/release-manifest.schema.json", "utf8"));
+    const artifactPathPattern = new RegExp(schema.$defs.gate.properties.artifactPath.pattern);
+    expect(artifactPathPattern.test("C:/release/gate-linux.zip")).toBe(false);
+    expect(artifactPathPattern.test("../artifacts/release/v1/gates/gate-linux.zip")).toBe(false);
+
+    const absolute = await writeFixture();
+    absolute.manifest.gates[0]!.artifactPath = join(process.cwd(), absolute.manifest.gates[0]!.artifactPath).replaceAll("\\", "/");
+    await writeFile(absolute.manifestPath, JSON.stringify(absolute.manifest, null, 2) + "\n", "utf8");
+    await expect(runVerifier(absolute.manifestPath, process.cwd())).rejects.toMatchObject({ stderr: expect.stringContaining("GateArtifactPathInvalid") });
+
+    const traversing = await writeFixture();
+    traversing.manifest.gates[0]!.artifactPath = traversing.manifest.gates[0]!.artifactPath.replace("/gates/", "/gates/../gates/");
+    await writeFile(traversing.manifestPath, JSON.stringify(traversing.manifest, null, 2) + "\n", "utf8");
+    await expect(runVerifier(traversing.manifestPath, process.cwd())).rejects.toMatchObject({ stderr: expect.stringContaining("GateArtifactPathInvalid") });
+  });
+
   it("rejects a release version that aliases a filesystem directory", async () => {
     const { manifestPath, manifest } = await writeFixture();
     manifest.version = "..";
@@ -508,6 +536,23 @@ describe("release manifest verifier", () => {
     mismatch.manifest.gates[0]!.artifactSha256 = "0".repeat(64);
     await writeFile(mismatch.manifestPath, JSON.stringify(mismatch.manifest, null, 2) + "\n", "utf8");
     await expect(runVerifier(mismatch.manifestPath, process.cwd())).rejects.toMatchObject({ stderr: expect.stringContaining("GateArtifactHashMismatch") });
+  });
+
+  it("rejects a stale Gate archive even when its outer hashes are rewritten", async () => {
+    const { manifestPath, manifest } = await writeFixture();
+    const gate = manifest.gates[0]!;
+    const delivery = manifest.gateEvidence.deliveries.find((candidate) => candidate.gate === gate.name)!;
+    const stale = buildGateArchive(gate.name, "0".repeat(40));
+    await writeFile(join(process.cwd(), gate.artifactPath), stale.bytes);
+    gate.artifactSha256 = stale.archiveSha256;
+    gate.reportSha256 = stale.reportSha256;
+    gate.vitestSha256 = stale.vitestSha256;
+    gate.receiptSha256 = stale.receiptSha256;
+    delivery.reportSha256 = stale.reportSha256;
+    delivery.vitestSha256 = stale.vitestSha256;
+    delivery.receiptSha256 = stale.receiptSha256;
+    await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf8");
+    await expect(runVerifier(manifestPath, process.cwd())).rejects.toMatchObject({ stderr: expect.stringContaining("GateArtifactReceiptInvalid") });
   });
 
   it("rejects missing, duplicate, unexpected, or cross-commit Gate evidence", async () => {

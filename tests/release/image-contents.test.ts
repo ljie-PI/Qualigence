@@ -73,6 +73,7 @@ describe("release image packaging", () => {
     expect(workflow).toContain("artifacts/release/${{ inputs.version }}/sbom.spdx.json");
     expect(workflow).toContain("if: failure() || cancelled()");
     expect(workflow).toContain("name: release-diagnostics-${{ inputs.version }}-${{ github.run_id }}");
+    expect(workflow).toContain("!artifacts/release/${{ inputs.version }}/release-manifest.json");
     expect(workflow).toContain("--render-compose release-work/compose.release.rendered.yaml");
     expect(workflow).toContain("signatureFromEvidence(windowsSignatures");
     expect(workflow).toContain("signatures: manifestWindowsSignatures");
