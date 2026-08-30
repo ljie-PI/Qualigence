@@ -4,6 +4,7 @@ import {
   link,
   lstat,
   mkdir,
+  mkdtemp,
   readFile,
   realpath,
   rm,
@@ -3964,9 +3965,93 @@ export function setReleaseVerifierRunnerForTests(
   };
 }
 
+interface ReleaseVerifierSnapshotReference {
+  readonly reference: GraphFreezeEvidenceReference;
+  readonly label: string;
+  readonly acceptedPrefixes: readonly string[];
+}
+
+function releaseVerifierSnapshotReferences(
+  input: FinalizeGraphFreezeInput,
+  manifest: Record<string, unknown>,
+): readonly ReleaseVerifierSnapshotReference[] {
+  const releasePrefix = `artifacts/release/${input.version}/`;
+  const references: ReleaseVerifierSnapshotReference[] = [
+    {
+      reference: manifestReference(
+        manifest["sbom"],
+        "release manifest.sbom",
+      ),
+      label: "release manifest.sbom",
+      acceptedPrefixes: [releasePrefix],
+    },
+    {
+      reference: manifestReference(
+        manifest["windowsEvidence"],
+        "release manifest.windowsEvidence",
+      ),
+      label: "release manifest.windowsEvidence",
+      acceptedPrefixes: [
+        releasePrefix,
+        `artifacts/manual-acceptance/${input.version}/`,
+      ],
+    },
+  ];
+  const gateEvidence = asRecord(
+    manifest["gateEvidence"],
+    "release manifest.gateEvidence",
+  );
+  if (typeof gateEvidence["path"] === "string") {
+    references.push({
+      reference: manifestReference(
+        gateEvidence,
+        "release manifest.gateEvidence",
+      ),
+      label: "release manifest.gateEvidence",
+      acceptedPrefixes: [releasePrefix],
+    });
+  }
+  for (const [index, value] of requireArray(
+    manifest,
+    "gates",
+    "release manifest",
+  ).entries()) {
+    const gate = asRecord(value, `release manifest.gates[${index}]`);
+    if (typeof gate["artifactPath"] !== "string") {
+      continue;
+    }
+    references.push({
+      reference: {
+        path: gate["artifactPath"],
+        sha256: requireString(
+          gate,
+          "artifactSha256",
+          `release manifest.gates[${index}]`,
+        ),
+      },
+      label: `release manifest.gates[${index}]`,
+      acceptedPrefixes: [releasePrefix],
+    });
+  }
+  if (manifest["releaseCompose"] !== undefined) {
+    references.push({
+      reference: manifestReference(
+        manifest["releaseCompose"],
+        "release manifest.releaseCompose",
+      ),
+      label: "release manifest.releaseCompose",
+      acceptedPrefixes: [
+        releasePrefix,
+        "deployments/self-hosted/compose/",
+      ],
+    });
+  }
+  return references;
+}
+
 async function runSelectedReleaseVerifier(
   input: FinalizeGraphFreezeInput,
-  manifestPath: string,
+  manifest: Record<string, unknown>,
   manifestBytes: Buffer,
 ): Promise<void> {
   const source = await repositoryFileAtCommit(
@@ -3974,18 +4059,58 @@ async function runSelectedReleaseVerifier(
     "scripts/verify-release-manifest.mjs",
     "ReleaseManifestVerifierInvalid",
   );
-  const nonce = `${process.pid}-${randomUUID()}`;
+  const snapshotRoot = await mkdtemp(
+    join(input.repositoryRoot, ".tmp-release-verifier-"),
+  );
   const verifierPath = join(
-    dirname(manifestPath),
-    `.verify-release-manifest-${nonce}.mjs`,
+    snapshotRoot,
+    "scripts",
+    "verify-release-manifest.mjs",
   );
   const manifestSnapshotPath = join(
-    dirname(manifestPath),
-    `.release-manifest-${nonce}.json`,
+    snapshotRoot,
+    "artifacts",
+    "release",
+    input.version,
+    "release-manifest.json",
   );
-  await writeFile(verifierPath, source.text, { encoding: "utf8", flag: "wx" });
   try {
+    await Promise.all([
+      mkdir(dirname(verifierPath), { recursive: true }),
+      mkdir(dirname(manifestSnapshotPath), { recursive: true }),
+    ]);
+    await writeFile(verifierPath, source.text, {
+      encoding: "utf8",
+      flag: "wx",
+    });
     await writeFile(manifestSnapshotPath, manifestBytes, { flag: "wx" });
+    const snapshotFiles = new Map<string, Buffer>();
+    for (const snapshotReference of releaseVerifierSnapshotReferences(
+      input,
+      manifest,
+    )) {
+      const bytes = await readManifestEvidenceBytes(
+        input,
+        snapshotReference.reference,
+        snapshotReference.label,
+        snapshotReference.acceptedPrefixes,
+      );
+      const existing = snapshotFiles.get(snapshotReference.reference.path);
+      if (existing !== undefined && !existing.equals(bytes)) {
+        throw new EvidenceValidationError(
+          "EvidenceDuplicate",
+          `${snapshotReference.label} conflicts with another manifest reference`,
+        );
+      }
+      snapshotFiles.set(snapshotReference.reference.path, bytes);
+    }
+    await Promise.all(
+      [...snapshotFiles].map(async ([path, bytes]) => {
+        const snapshotPath = join(snapshotRoot, ...path.split("/"));
+        await mkdir(dirname(snapshotPath), { recursive: true });
+        await writeFile(snapshotPath, bytes, { flag: "wx" });
+      }),
+    );
     const invocation: ReleaseVerifierInvocation = {
       executable: process.execPath,
       args: [
@@ -3998,7 +4123,7 @@ async function runSelectedReleaseVerifier(
         "--commit",
         input.commit,
       ],
-      cwd: input.repositoryRoot,
+      cwd: snapshotRoot,
       env: releaseVerifierEnvironment(),
       ...(input.signal === undefined ? {} : { signal: input.signal }),
     };
@@ -4015,10 +4140,12 @@ async function runSelectedReleaseVerifier(
       await runner(invocation);
     }
   } finally {
-    await Promise.all([
-      rm(verifierPath, { force: true }),
-      rm(manifestSnapshotPath, { force: true }),
-    ]);
+    await rm(snapshotRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 50,
+    });
   }
 }
 
@@ -4070,7 +4197,7 @@ async function validateReleaseManifestEvidence(
   }
 
   try {
-    await runSelectedReleaseVerifier(input, manifestPath, manifestBytes);
+    await runSelectedReleaseVerifier(input, manifest, manifestBytes);
   } catch (error) {
     if (
       input.signal?.aborted === true ||

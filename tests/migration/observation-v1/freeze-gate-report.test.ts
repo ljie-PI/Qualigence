@@ -43,7 +43,7 @@ const FINALIZER_FIXTURE_ROOT = join(
   "observation-v1",
   "freeze-finalizer",
 );
-const FINALIZER_COMMIT = "aca8a487268ef6baab644ff47401efc85b1d1a26";
+const FINALIZER_COMMIT = "1e3be71ec89391f34654c48e69e3fb233c4e6252";
 const CLOSURE_ISSUES = [
   140, 145, 143, 136, 139, 138, 141, 135, 137, 144, 134, 142, 157, 147, 155,
   150, 152, 153, 156, 149, 148, 151, 146, 154, 163, 159, 160, 167, 168, 161,
@@ -748,7 +748,7 @@ async function withOfflineAttestationVerifier<T>(
     }
     const { stdout: selectedVerifier } = await execFileAsync("git", [
       "-C",
-      invocation.cwd,
+      process.cwd(),
       "show",
       `${FINALIZER_COMMIT}:scripts/verify-release-manifest.mjs`,
     ]);
@@ -1005,7 +1005,7 @@ async function writeReleaseFixture(
 ): Promise<{ path: string; sha256: string }> {
   await ensureGitObjectStore(repositoryRoot);
   const releaseRoot = join(repositoryRoot, "artifacts", "release", version);
-  const gateRoot = join(releaseRoot, "gate-artifacts");
+  const gateRoot = join(releaseRoot, "gates");
   await mkdir(gateRoot, { recursive: true });
   await mkdir(join(repositoryRoot, "scripts"), { recursive: true });
   const authoritativeVerifier = join(
@@ -1175,7 +1175,7 @@ async function writeReleaseFixture(
       [`${name}/vitest.json`]: vitest,
       "sha256.txt": hashManifest,
     });
-    const path = `artifacts/release/${version}/gate-artifacts/${name}.zip`;
+    const path = `artifacts/release/${version}/gates/${name}.zip`;
     await writeFile(join(repositoryRoot, ...path.split("/")), archive);
     gateArchives.set(name, {
       path,
@@ -1193,7 +1193,6 @@ async function writeReleaseFixture(
     }
     return {
       gate: name,
-      artifactName: `${name}.zip`,
       artifactId: String(index + 100),
       runId: String(index + 200),
       commit: FINALIZER_COMMIT,
@@ -1257,7 +1256,7 @@ async function writeReleaseFixture(
       }
       return {
         name: delivery.gate,
-        artifactName: delivery.artifactName,
+        artifactName: `${delivery.gate}.zip`,
         artifactPath: archive.path,
         artifactSha256: archive.sha256,
         artifactId: delivery.artifactId,
@@ -1511,7 +1510,7 @@ describe("finalizeGraphFreezeFromEvidence", () => {
       repositoryRoot,
       repository: "ljie-PI/Qualigence",
       version,
-      commit: "aca8a487268ef6baab644ff47401efc85b1d1a26",
+      commit: FINALIZER_COMMIT,
       decidedAt: "2026-08-30T08:00:00.000Z",
       evidence: {
         candidateMigration: {
@@ -1562,7 +1561,7 @@ describe("finalizeGraphFreezeFromEvidence", () => {
       repositoryRoot,
       repository: "ljie-PI/Qualigence",
       version,
-      commit: "aca8a487268ef6baab644ff47401efc85b1d1a26",
+      commit: FINALIZER_COMMIT,
       decidedAt: "2026-08-30T08:00:00.000Z",
       evidence,
     });
@@ -2316,12 +2315,27 @@ describe("finalizeGraphFreezeFromEvidence", () => {
     );
     fixtureRoots.push(repositoryRoot);
     const version = "v0.1.0-candidate";
-    const provider = await readFixtureObject("provider.json");
+    let provider = await readFixtureObject("provider.json");
     await writeEvidenceObject(
       repositoryRoot,
       version,
       "provider.json",
       provider,
+    );
+    provider = mutableRecord(
+      JSON.parse(
+        await readFile(
+          join(
+            repositoryRoot,
+            "artifacts",
+            "release",
+            version,
+            "provider.json",
+          ),
+          "utf8",
+        ),
+      ),
+      "materialized provider fixture",
     );
     const scan = await readFixtureObject("provider-redaction-stdout.json");
     scan["status"] = "credential-found";
@@ -3215,9 +3229,19 @@ describe("finalizeGraphFreezeFromEvidence", () => {
       repositoryRoot,
       "v0.1.0-candidate",
     );
-    await writeFile(
-      join(repositoryRoot, "scripts", "verify-release-manifest.mjs"),
-      "setInterval(() => {}, 1_000);\n",
+    const restore = setReleaseVerifierRunnerForTests(
+      (invocation) =>
+        new Promise<void>((_resolve, reject) => {
+          if (invocation.signal?.aborted !== false) {
+            reject(new Error("release verifier cancelled"));
+            return;
+          }
+          invocation.signal.addEventListener(
+            "abort",
+            () => reject(new Error("release verifier cancelled")),
+            { once: true },
+          );
+        }),
     );
     const controller = new AbortController();
     const cancellation = setTimeout(() => controller.abort(), 50);
@@ -3232,6 +3256,7 @@ describe("finalizeGraphFreezeFromEvidence", () => {
       ).rejects.toMatchObject({ code: "FinalizationAborted" });
     } finally {
       clearTimeout(cancellation);
+      restore();
     }
     await expect(
       readFile(
