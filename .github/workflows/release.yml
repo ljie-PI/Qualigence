@@ -1,0 +1,336 @@
+name: Ticket 34 release candidate artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Immutable release evidence directory name, for example v0.1.0-rc.1
+        required: true
+        type: string
+      commit:
+        description: Full commit SHA to release; defaults to the workflow commit
+        required: false
+        type: string
+      windows_evidence_path:
+        description: Repository-relative signed Ticket 31 Windows evidence path
+        required: true
+        type: string
+      windows_evidence_sha256:
+        description: SHA-256 of the signed Ticket 31 Windows evidence file
+        required: true
+        type: string
+      windows_evidence_operator:
+        description: Operator signer recorded in the Ticket 31 evidence
+        required: true
+        type: string
+      windows_evidence_operator_signature_sha256:
+        description: SHA-256 of the Ticket 31 operator signature record
+        required: true
+        type: string
+      windows_evidence_reviewer:
+        description: Independent reviewer signer recorded in the Ticket 31 evidence
+        required: true
+        type: string
+      windows_evidence_reviewer_signature_sha256:
+        description: SHA-256 of the Ticket 31 reviewer signature record
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+  actions: read
+  attestations: write
+  id-token: write
+
+concurrency:
+  group: ticket-34-release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      # v4.6.0, reviewed immutable action commit.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.commit || github.sha }}
+      # v6.1.0, reviewed immutable action commit.
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24
+      - name: Install and verify release tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          node --version | grep -Eq '^v24\.'
+          test "$(corepack pnpm --version)" = 11.7.0
+          corepack pnpm install --frozen-lockfile
+          corepack pnpm vitest run tests/release/image-contents.test.ts tests/release/release-manifest.test.ts
+          corepack pnpm typecheck
+      - name: Verify requested commit and signed Windows evidence input
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          EXPECTED_COMMIT: ${{ inputs.commit || github.sha }}
+          WINDOWS_EVIDENCE_PATH: ${{ inputs.windows_evidence_path }}
+          WINDOWS_EVIDENCE_SHA256: ${{ inputs.windows_evidence_sha256 }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_VERSION" =~ ^[A-Za-z0-9._-]+$ ]]
+          [[ "$WINDOWS_EVIDENCE_PATH" != /* ]]
+          [[ "$WINDOWS_EVIDENCE_PATH" != *..* ]]
+          existing_release_artifacts="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=release-${RELEASE_VERSION}&per_page=100" --jq '[.artifacts[] | select(.expired == false)] | length')"
+          test "$existing_release_artifacts" = 0
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          test -f "$WINDOWS_EVIDENCE_PATH"
+          test "$(sha256sum "$WINDOWS_EVIDENCE_PATH" | awk '{print $1}')" = "$WINDOWS_EVIDENCE_SHA256"
+      - name: Verify same-commit mandatory Gate artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          EXPECTED_COMMIT: ${{ inputs.commit || github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-work
+          verified=false
+          for attempt in $(seq 1 20); do
+            if node --experimental-strip-types tests/helpers/gate-evidence.ts verify-github --report release-work/gate-artifacts.json; then verified=true; break; fi
+            sleep 30
+          done
+          test "$verified" = true
+          jq -r '.deliveries[] | [.gate, .artifactId] | @tsv' release-work/gate-artifacts.json | while IFS=$'\t' read -r gate artifact_id; do
+            gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > "release-work/${gate}.zip"
+            sha256sum "release-work/${gate}.zip" > "release-work/${gate}.zip.sha256"
+          done
+      - name: Build deploy roots for release SBOM
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack pnpm build
+          release_dir="artifacts/release/${{ inputs.version }}"
+          test ! -e "$release_dir"
+          rm -rf release-work/deploy
+          mkdir -p release-work/deploy "$release_dir"
+          corepack pnpm --filter @qualigence/server deploy --prod release-work/deploy/server
+          corepack pnpm --filter @qualigence/intelligence-worker deploy --prod release-work/deploy/worker
+          corepack pnpm --filter @qualigence/admin-cli deploy --prod release-work/deploy/admin
+          find release-work/deploy -mindepth 2 -maxdepth 2 -type d \( -name src -o -name test -o -name tests -o -name __tests__ \) -prune -exec rm -rf {} +
+          find release-work/deploy -path 'release-work/deploy/*/node_modules/@qualigence/*/src' -type d -prune -exec rm -rf {} +
+          find release-work/deploy -type d \( -name test -o -name tests -o -name __tests__ \) -prune -exec rm -rf {} +
+          find release-work/deploy -type f \( -name '*.ts' -o -name '*.tsx' -o -name '*.map' -o -name '*.tsbuildinfo' \) -delete
+          node scripts/verify-release-manifest.mjs scan-root --roots release-work/deploy/server,release-work/deploy/worker,release-work/deploy/admin
+      - name: Log in to GHCR
+        shell: bash
+        run: echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Build and push immutable application image
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo_lc="${GITHUB_REPOSITORY,,}"
+          app_image="ghcr.io/${repo_lc}/self-hosted"
+          tag="${{ inputs.version }}-${GITHUB_SHA}"
+          echo "APP_IMAGE=$app_image" >> "$GITHUB_ENV"
+          docker buildx create --use --name qualigence-release-builder
+          docker buildx build --file Dockerfile --provenance=mode=max --sbom=true --push --metadata-file release-work/application-image.json --tag "$app_image:$tag" .
+          app_digest="$(jq -r '."containerimage.digest"' release-work/application-image.json)"
+          test "${app_digest#sha256:}" != "$app_digest"
+          echo "APP_DIGEST=$app_digest" >> "$GITHUB_ENV"
+      - name: Build and push immutable Console image
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo_lc="${GITHUB_REPOSITORY,,}"
+          console_image="ghcr.io/${repo_lc}/self-hosted-console"
+          tag="${{ inputs.version }}-${GITHUB_SHA}"
+          echo "CONSOLE_IMAGE=$console_image" >> "$GITHUB_ENV"
+          docker buildx build --file deployments/self-hosted/docker/console.Dockerfile --provenance=mode=max --sbom=true --push --metadata-file release-work/console-image.json --tag "$console_image:$tag" .
+          console_digest="$(jq -r '."containerimage.digest"' release-work/console-image.json)"
+          test "${console_digest#sha256:}" != "$console_digest"
+          echo "CONSOLE_DIGEST=$console_digest" >> "$GITHUB_ENV"
+      - name: Write release SBOM bound to immutable image subjects
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf release-work/console-dist
+          cp -R apps/web-console/dist release-work/console-dist
+          find release-work/console-dist -type f -name '*.map' -delete
+          node scripts/verify-release-manifest.mjs write-sbom \
+            --roots release-work/deploy/server,release-work/deploy/worker,release-work/deploy/admin \
+            --console release-work/console-dist \
+            --repository "$GITHUB_REPOSITORY" \
+            --commit "${{ inputs.commit || github.sha }}" \
+            --application-ref "${APP_IMAGE}@${APP_DIGEST}" \
+            --console-ref "${CONSOLE_IMAGE}@${CONSOLE_DIGEST}" \
+            --output artifacts/release/${{ inputs.version }}/sbom.spdx.json
+      # v4 release tag, reviewed immutable action commit.
+      - id: attest-app
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+        with:
+          subject-name: ${{ env.APP_IMAGE }}
+          subject-digest: ${{ env.APP_DIGEST }}
+          push-to-registry: true
+      # v4 release tag, reviewed immutable action commit.
+      - id: attest-console
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+        with:
+          subject-name: ${{ env.CONSOLE_IMAGE }}
+          subject-digest: ${{ env.CONSOLE_DIGEST }}
+          push-to-registry: true
+      # v4 release tag, reviewed immutable action commit.
+      - id: attest-app-sbom
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e
+        with:
+          subject-name: ${{ env.APP_IMAGE }}
+          subject-digest: ${{ env.APP_DIGEST }}
+          sbom-path: artifacts/release/${{ inputs.version }}/sbom.spdx.json
+          push-to-registry: true
+      # v4 release tag, reviewed immutable action commit.
+      - id: attest-console-sbom
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e
+        with:
+          subject-name: ${{ env.CONSOLE_IMAGE }}
+          subject-digest: ${{ env.CONSOLE_DIGEST }}
+          sbom-path: artifacts/release/${{ inputs.version }}/sbom.spdx.json
+          push-to-registry: true
+      - name: Preserve attestation bundles
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "${{ steps.attest-app.outputs.bundle-path }}" release-work/application-provenance.bundle.json
+          cp "${{ steps.attest-console.outputs.bundle-path }}" release-work/console-provenance.bundle.json
+          cp "${{ steps.attest-app-sbom.outputs.bundle-path }}" release-work/application-sbom.bundle.json
+          cp "${{ steps.attest-console-sbom.outputs.bundle-path }}" release-work/console-sbom.bundle.json
+      - name: Generate and verify release manifest
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          EXPECTED_COMMIT: ${{ inputs.commit || github.sha }}
+          WINDOWS_EVIDENCE_PATH: ${{ inputs.windows_evidence_path }}
+          WINDOWS_EVIDENCE_SHA256: ${{ inputs.windows_evidence_sha256 }}
+          WINDOWS_EVIDENCE_OPERATOR: ${{ inputs.windows_evidence_operator }}
+          WINDOWS_EVIDENCE_OPERATOR_SIGNATURE_SHA256: ${{ inputs.windows_evidence_operator_signature_sha256 }}
+          WINDOWS_EVIDENCE_REVIEWER: ${{ inputs.windows_evidence_reviewer }}
+          WINDOWS_EVIDENCE_REVIEWER_SIGNATURE_SHA256: ${{ inputs.windows_evidence_reviewer_signature_sha256 }}
+          APP_PROVENANCE: ${{ steps.attest-app.outputs.attestation-url }}
+          CONSOLE_PROVENANCE: ${{ steps.attest-console.outputs.attestation-url }}
+          APP_SBOM_ATTESTATION: ${{ steps.attest-app-sbom.outputs.attestation-url }}
+          CONSOLE_SBOM_ATTESTATION: ${{ steps.attest-console-sbom.outputs.attestation-url }}
+          QUALIGENCE_VERIFY_ATTESTATIONS: "true"
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { createHash } from 'node:crypto';
+          import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+          const version = process.env.RELEASE_VERSION;
+          const commit = process.env.EXPECTED_COMMIT;
+          const sbomPath = `artifacts/release/${version}/sbom.spdx.json`;
+          const sha = (path) => createHash('sha256').update(readFileSync(path)).digest('hex');
+          const text = (path) => readFileSync(path, 'utf8');
+          const parseJsonEvidence = (path) => {
+            const bytes = text(path);
+            try { return JSON.parse(bytes); } catch {}
+            const matches = [...bytes.matchAll(/```(?:json|jsonc)?\s*([\s\S]*?)```/giu)];
+            for (const match of matches) {
+              try { return JSON.parse(match[1]); } catch {}
+            }
+            throw new Error(`WindowsEvidenceJsonUnavailable: ${path}`);
+          };
+          const signatureFromEvidence = (records, signer, signatureSha256) => {
+            const match = records.find((record) => record.signer === signer && record.signatureSha256 === signatureSha256);
+            if (!match) throw new Error(`WindowsEvidenceSignatureUnavailable: ${signer}`);
+            return { signer: match.signer, signedAt: match.signedAt, signatureSha256: match.signatureSha256 };
+          };
+          const gateArtifacts = JSON.parse(readFileSync('release-work/gate-artifacts.json', 'utf8'));
+          if (gateArtifacts.status !== 'verified') throw new Error('GateArtifactsNotVerified');
+          const gates = gateArtifacts.deliveries.map((delivery) => ({
+            name: delivery.gate,
+            artifactName: `${delivery.gate}.zip`,
+            artifactId: String(delivery.artifactId),
+            runId: String(delivery.runId),
+            artifactSha256: sha(`release-work/${delivery.gate}.zip`),
+            reportSha256: delivery.reportSha256,
+            vitestSha256: delivery.vitestSha256,
+            receiptSha256: delivery.receiptSha256,
+            commit: delivery.commit,
+          }));
+          const windowsEvidenceJson = parseJsonEvidence(process.env.WINDOWS_EVIDENCE_PATH);
+          const windowsSignatures = windowsEvidenceJson.WindowsChecklistSignatures || windowsEvidenceJson.windowsChecklistSignatures || windowsEvidenceJson.signatures;
+          if (!Array.isArray(windowsSignatures)) throw new Error('WindowsEvidenceSignaturesUnavailable');
+          const manifestWindowsSignatures = [
+            signatureFromEvidence(windowsSignatures, process.env.WINDOWS_EVIDENCE_OPERATOR, process.env.WINDOWS_EVIDENCE_OPERATOR_SIGNATURE_SHA256),
+            signatureFromEvidence(windowsSignatures, process.env.WINDOWS_EVIDENCE_REVIEWER, process.env.WINDOWS_EVIDENCE_REVIEWER_SIGNATURE_SHA256),
+          ];
+          const manifest = {
+            schemaVersion: 'qualigence-release-manifest/v1',
+            version,
+            repository: process.env.GITHUB_REPOSITORY,
+            commit,
+            generatedAt: new Date().toISOString(),
+            images: {
+              application: {
+                name: process.env.APP_IMAGE,
+                digest: process.env.APP_DIGEST,
+                reference: `${process.env.APP_IMAGE}@${process.env.APP_DIGEST}`,
+                provenance: {
+                  attestationId: process.env.APP_PROVENANCE,
+                  bundle: text('release-work/application-provenance.bundle.json'),
+                  bundleSha256: sha('release-work/application-provenance.bundle.json'),
+                  sbomAttestationId: process.env.APP_SBOM_ATTESTATION,
+                  sbomBundle: text('release-work/application-sbom.bundle.json'),
+                  sbomBundleSha256: sha('release-work/application-sbom.bundle.json'),
+                },
+              },
+              console: {
+                name: process.env.CONSOLE_IMAGE,
+                digest: process.env.CONSOLE_DIGEST,
+                reference: `${process.env.CONSOLE_IMAGE}@${process.env.CONSOLE_DIGEST}`,
+                provenance: {
+                  attestationId: process.env.CONSOLE_PROVENANCE,
+                  bundle: text('release-work/console-provenance.bundle.json'),
+                  bundleSha256: sha('release-work/console-provenance.bundle.json'),
+                  sbomAttestationId: process.env.CONSOLE_SBOM_ATTESTATION,
+                  sbomBundle: text('release-work/console-sbom.bundle.json'),
+                  sbomBundleSha256: sha('release-work/console-sbom.bundle.json'),
+                },
+              },
+            },
+            sbom: { path: sbomPath, sha256: sha(sbomPath), format: 'spdx-json' },
+            gateEvidence: gateArtifacts,
+            gates,
+            windowsEvidence: {
+              path: process.env.WINDOWS_EVIDENCE_PATH,
+              sha256: process.env.WINDOWS_EVIDENCE_SHA256,
+              commit,
+              signatures: manifestWindowsSignatures,
+            },
+          };
+          const manifestPath = `artifacts/release/${version}/release-manifest.json`;
+          if (existsSync(manifestPath)) throw new Error(`ReleaseManifestAlreadyExists: ${manifestPath}`);
+          const temporaryPath = `${manifestPath}.tmp-${process.pid}`;
+          writeFileSync(temporaryPath, `${JSON.stringify(manifest, null, 2)}\n`);
+          renameSync(temporaryPath, manifestPath);
+          NODE
+          corepack pnpm gate:release -- --manifest artifacts/release/${{ inputs.version }}/release-manifest.json --repository "$GITHUB_REPOSITORY" --commit "$EXPECTED_COMMIT" --render-compose release-work/compose.release.rendered.yaml
+      # v4.6.2, reviewed immutable action commit.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: success()
+        with:
+          name: release-${{ inputs.version }}
+          path: |
+            artifacts/release/${{ inputs.version }}/release-manifest.json
+            artifacts/release/${{ inputs.version }}/sbom.spdx.json
+          if-no-files-found: error
+      # v4.6.2, reviewed immutable action commit.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: failure()
+        with:
+          name: release-diagnostics-${{ inputs.version }}-${{ github.run_id }}
+          path: |
+            release-work/
+            artifacts/release/${{ inputs.version }}/
+          if-no-files-found: warn

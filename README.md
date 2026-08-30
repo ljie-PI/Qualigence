@@ -88,6 +88,46 @@ pnpm test:e2e
 git diff --check
 ```
 
+## Self-hosted Release Artifacts
+
+Release deployment uses immutable image digests, not mutable tags. The production
+Compose file remains the local build/development entrypoint; release candidates
+are rendered from `deployments/self-hosted/compose/compose.release.yaml` only
+after `scripts/verify-release-manifest.mjs` validates a
+`qualigence-release-manifest/v1` record.
+
+A valid release manifest binds exactly one repository commit to:
+
+- the application image reference `name@sha256:<digest>` for Server, Worker, and
+  Admin CLI roles;
+- the Console static image reference `name@sha256:<digest>`;
+- an SPDX JSON SBOM path and SHA-256;
+- provenance/attestation identifiers for the pushed images;
+- the mandatory same-commit Gate artifacts `gate-linux`, `gate-windows-rust`,
+  `gate-self-hosted`, and `browser-e2e`;
+- the signed Ticket 31 Windows native acceptance evidence path and SHA-256.
+
+Verify a generated manifest and render digest-only Compose with:
+
+```bash
+GH_TOKEN="$(gh auth token)" GITHUB_REPOSITORY=ljie-PI/Qualigence \
+  QUALIGENCE_VERIFY_ATTESTATIONS=true \
+  pnpm gate:release -- --manifest artifacts/release/<version>/release-manifest.json \
+    --repository ljie-PI/Qualigence \
+    --commit <40-char-commit> \
+    --render-compose artifacts/release/<version>/compose.release.rendered.yaml
+```
+
+If the manifest carries repository-relative `artifactPath` values for local Gate
+archives, `GH_TOKEN` is not required; otherwise the verifier downloads each
+named artifact by immutable artifact ID and recomputes its SHA-256.
+
+The release verifier rejects mutable tags, non-`sha256:` image references,
+wrong repository/commit, duplicate or missing Gate names, cross-commit Gate
+artifacts, mismatched SBOM or Windows-evidence hashes, and unsigned Windows
+evidence. Ticket 31 and Ticket 46 evidence are phase-2 release dependencies;
+missing human/provider evidence is a blocked release, never a synthetic pass.
+
 ### Live Smoke（显式 opt-in，不在普通 Gate）
 
 `pnpm test:live` 默认全部跳过，只有同时满足以下条件才对真实远程 Provider 运行 fault Fixture：

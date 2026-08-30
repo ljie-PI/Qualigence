@@ -4,7 +4,7 @@
 
 **Blocked by:** 33 — Deliver browser E2E and mandatory CI Gates (implementation merge). **Phase-2 release-artifact dependencies:** Ticket 31 signed Windows evidence and Ticket 46 real-provider evidence. Ticket 35 consumes this ticket's immutable artifacts for the final deterministic decision.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 ## Tracked scope
 
@@ -117,3 +117,19 @@ Record base/reviewed SHAs in `## Comments`. Review Docker contexts, image conten
 ## Comments
 
 - update - 2026-08-27: Maintainer authorized code-first closure. Ticket 34 implementation stays ordered after Ticket 33. BuildKit publication, final manifest/SBOM/provenance generation, and binding of Ticket 31/46 evidence are deferred to the integrated phase-2 release run; Ticket 35 validates those immutable outputs and makes no premature frozen/release claim.
+- start - 2026-08-29: Claimed for implementation on branch `ticket-34-release-sbom-provenance-manifest` from fixed base `d85438e87cefd9be12d93875c1d748c173be5e9d` (Ticket 33 merge). Behavior Matrix applies as written above; implementation will preserve existing readiness state machines, fail closed for missing manual/provider evidence, and limit edits to the documented Ticket 34 release packaging, manifest, workflow, tests, README, and ticket evidence scope.
+
+- final - 2026-08-30: Deterministic implementation complete from fixed base `d85438e87cefd9be12d93875c1d748c173be5e9d`; reviewed code/test/workflow head `f0e71af1a81430283983446e1a911c8bee5768b9`.
+  - Complete-matrix Review 13 clean after maintainer-authorized review rounds beyond the normal five-round cap:
+    - Standards: `Q:/Qualigence/.pi-subagents/artifacts/outputs/ticket34-review13/standards.md`
+    - Spec: `Q:/Qualigence/.pi-subagents/artifacts/outputs/ticket34-review13/spec.md`
+    - Both reports found no Critical or Important blockers and covered every Behavior Matrix row as pass.
+  - Exact-head deterministic validation at `f0e71af1a81430283983446e1a911c8bee5768b9`:
+    - `corepack pnpm install --frozen-lockfile` — passed.
+    - `corepack pnpm vitest run tests/release/image-contents.test.ts tests/release/release-manifest.test.ts` — 2 files / 25 tests passed.
+    - `corepack pnpm typecheck` — passed.
+    - `git diff --check` — passed.
+    - `corepack pnpm gate:fast` — 97 files / 910 tests passed / 0 failed / 0 skipped / 0 todo; GateEvidence accepted at `f0e71af1a81430283983446e1a911c8bee5768b9`.
+  - Implemented release packaging and verification: deploy-only Server/Worker/Admin roots, static Console image sourcemap removal, digest-only release Compose overlay, release-manifest schema/verifier, self-sufficient manifest binding embedded Gate evidence and attestation bundles, fail-closed Windows checklist/signature/local+RDP evidence validation, BuildKit/GHCR release workflow, and README operator guidance.
+  - Phase-2 release publication was intentionally not executed in this implementation PR. The release workflow requires same-candidate Ticket 31 signed Windows local-console/RDP evidence and Ticket 46 real-provider acceptance before immutable `artifacts/release/<version>/release-manifest.json` and `sbom.spdx.json` can be produced. Missing evidence remains release-blocking; no synthetic release manifest, fake signature, fake provider result, or registry publication was generated.
+  - Pull request and merge evidence: pending creation.
