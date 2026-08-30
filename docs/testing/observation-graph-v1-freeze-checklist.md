@@ -77,7 +77,9 @@ The decision covers these capabilities:
    Windows checklist, SBOM, provenance, and attestations.
 
 The finalizer reuses `scripts/verify-release-manifest.mjs`; it does not duplicate
-or weaken Ticket 34's release authority. It atomically creates exactly
+or weaken Ticket 34's release authority. It executes the verifier bytes pinned
+to reviewed producer PR #183 with only the environment required for executable
+lookup and GitHub attestation verification. It atomically creates exactly
 `artifacts/release/<version>/graph-freeze-decision.json`. Byte-identical replay is
 idempotent, conflicting replay never overwrites the terminal artifact, and
 cancellation or persistence failure cannot return success-shaped output. Every

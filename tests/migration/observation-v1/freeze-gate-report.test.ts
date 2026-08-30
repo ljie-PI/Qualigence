@@ -2719,6 +2719,49 @@ describe("finalizeGraphFreezeFromEvidence", () => {
     }
   });
 
+  it("executes the pinned Ticket 34 verifier with an allowlisted environment", async () => {
+    const repositoryRoot = await mkdtemp(
+      join(tmpdir(), "qualigence-freeze-verifier-trust-"),
+    );
+    fixtureRoots.push(repositoryRoot);
+    const releaseManifest = await writeReleaseFixture(
+      repositoryRoot,
+      "v0.1.0-candidate",
+    );
+    process.env["QUALIGENCE_UNTRUSTED_TEST_SECRET"] = "must-not-cross-boundary";
+    const restore = setReleaseVerifierRunnerForTests(async (invocation) => {
+      expect(invocation.env["QUALIGENCE_UNTRUSTED_TEST_SECRET"]).toBeUndefined();
+      expect(
+        invocation.env["QUALIGENCE_ALLOW_OFFLINE_ATTESTATION_FIXTURES"],
+      ).toBeUndefined();
+      const verifierPath = invocation.args[0];
+      if (verifierPath === undefined) {
+        throw new Error("release verifier invocation has no executable script");
+      }
+      const { stdout: trustedVerifier } = await execFileAsync("git", [
+        "-C",
+        process.cwd(),
+        "show",
+        `${FINALIZER_COMMIT}:scripts/verify-release-manifest.mjs`,
+      ]);
+      expect(await readFile(verifierPath, "utf8")).toBe(trustedVerifier);
+      throw new Error("fixture stops before external attestation verification");
+    });
+    try {
+      const result = await finalizeGraphFreezeFromEvidence(
+        finalizerInput(repositoryRoot, {
+          evidence: { releaseManifest },
+        }),
+      );
+      expect(result.decision.blockingReasons).toContain(
+        "ReleaseManifestVerificationFailed: release-manifest",
+      );
+    } finally {
+      restore();
+      delete process.env["QUALIGENCE_UNTRUSTED_TEST_SECRET"];
+    }
+  });
+
   it("rejects Windows evidence changed after Ticket 34 verification", async () => {
     const repositoryRoot = await mkdtemp(
       join(tmpdir(), "qualigence-freeze-windows-toctou-"),
@@ -3194,6 +3237,7 @@ describe("finalizeGraphFreezeFromEvidence", () => {
     ["duplicate Windows checklist item", "WindowsEvidenceItemDuplicate"],
     ["incomplete Windows checklist", "WindowsEvidenceItemMissing"],
     ["substituted Windows checklist item", "WindowsEvidenceItemInvalid"],
+    ["cross-section Windows checklist ids", "WindowsEvidenceItemInvalid"],
     ["duplicate Windows signer", "WindowsEvidenceSignerInvalid"],
     ["incompatible Runner protocol", "WindowsEvidenceProtocolInvalid"],
     ["cross-commit CI artifact", "GateArtifactCommitMismatch"],
@@ -3226,6 +3270,7 @@ describe("finalizeGraphFreezeFromEvidence", () => {
       scenario === "duplicate Windows checklist item" ||
       scenario === "incomplete Windows checklist" ||
       scenario === "substituted Windows checklist item" ||
+      scenario === "cross-section Windows checklist ids" ||
       scenario === "duplicate Windows signer" ||
       scenario === "incompatible Runner protocol"
     ) {
@@ -3273,6 +3318,22 @@ describe("finalizeGraphFreezeFromEvidence", () => {
         } else if (scenario === "substituted Windows checklist item") {
           mutableRecord(items[0], "Windows checklist item")["id"] =
             "3.substituted";
+        } else if (scenario === "cross-section Windows checklist ids") {
+          const otherSection = items.find(
+            (value) =>
+              mutableRecord(value, "Windows checklist item")["section"] === "4",
+          );
+          if (otherSection === undefined) {
+            throw new Error("Windows fixture has no second checklist section");
+          }
+          const first = mutableRecord(items[0], "Windows checklist item");
+          const second = mutableRecord(
+            otherSection,
+            "Windows checklist item",
+          );
+          const firstId = first["id"];
+          first["id"] = second["id"];
+          second["id"] = firstId;
         } else {
           items.shift();
         }

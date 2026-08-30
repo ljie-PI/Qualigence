@@ -2679,11 +2679,12 @@ async function repositoryFileAtCommit(
   input: FinalizeGraphFreezeInput,
   path: string,
   errorCode = "BenchmarkSourceInvalid",
+  commit = input.commit,
 ): Promise<{ readonly text: string; readonly sha256: string }> {
   try {
     const { stdout } = await execFileAsync(
       "git",
-      ["-C", input.repositoryRoot, "show", `${input.commit}:${path}`],
+      ["-C", input.repositoryRoot, "show", `${commit}:${path}`],
       {
         maxBuffer: 16 * 1024 * 1024,
         signal: input.signal,
@@ -2702,7 +2703,7 @@ async function repositoryFileAtCommit(
     }
     throw new EvidenceValidationError(
       errorCode,
-      `cannot read ${path} from selected commit: ${errorMessage(error)}`,
+      `cannot read ${path} from commit ${commit}: ${errorMessage(error)}`,
     );
   }
 }
@@ -3955,12 +3956,15 @@ function validateCompleteWindowsChecklist(
     );
     if (
       seenItemIds.has(id) ||
+      id.split(".", 1)[0] !== section ||
       (item["result"] !== "pass" && item["result"] !== "not_applicable")
     ) {
       throw new EvidenceValidationError(
         seenItemIds.has(id)
           ? "WindowsEvidenceItemDuplicate"
-          : "WindowsEvidenceItemIncomplete",
+          : id.split(".", 1)[0] !== section
+            ? "WindowsEvidenceItemInvalid"
+            : "WindowsEvidenceItemIncomplete",
         `Windows checklist item ${id} is duplicated or incomplete`,
       );
     }
@@ -4075,8 +4079,28 @@ function verifierErrorCode(error: unknown): string {
 }
 
 function releaseVerifierEnvironment(): NodeJS.ProcessEnv {
-  const environment = { ...process.env };
-  delete environment["QUALIGENCE_ALLOW_OFFLINE_ATTESTATION_FIXTURES"];
+  const allowed = new Set([
+    "path",
+    "pathext",
+    "systemroot",
+    "windir",
+    "home",
+    "userprofile",
+    "tmp",
+    "temp",
+    "gh_token",
+    "github_token",
+    "gh_host",
+    "gh_config_dir",
+    "xdg_config_home",
+    "qualigence_verify_attestations",
+  ]);
+  const environment: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (allowed.has(key.toLowerCase()) && value !== undefined) {
+      environment[key] = value;
+    }
+  }
   return environment;
 }
 
@@ -4235,6 +4259,7 @@ async function runSelectedReleaseVerifier(
     input,
     "scripts/verify-release-manifest.mjs",
     "ReleaseManifestVerifierInvalid",
+    REQUIRED_TICKET_34_REMEDIATION_REMOTE_HEAD,
   );
   const snapshotRoot = await mkdtemp(
     join(input.repositoryRoot, ".tmp-release-verifier-"),
