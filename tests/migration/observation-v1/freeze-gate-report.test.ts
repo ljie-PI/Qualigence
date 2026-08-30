@@ -2628,6 +2628,65 @@ describe("finalizeGraphFreezeFromEvidence", () => {
     expect(result.decision.signoff).toBeUndefined();
   });
 
+  it.each(["SBOM", "Gate artifact"] as const)(
+    "rejects a %s changed after Ticket 34 verification",
+    async (artifact) => {
+      const repositoryRoot = await mkdtemp(
+        join(tmpdir(), "qualigence-freeze-release-input-toctou-"),
+      );
+      fixtureRoots.push(repositoryRoot);
+      const version = "v0.1.0-candidate";
+      const releaseManifest = await writeReleaseFixture(
+        repositoryRoot,
+        version,
+      );
+      const manifest = mutableRecord(
+        JSON.parse(
+          await readFile(
+            join(repositoryRoot, ...releaseManifest.path.split("/")),
+            "utf8",
+          ),
+        ),
+        "release manifest",
+      );
+      const reference =
+        artifact === "SBOM"
+          ? mutableRecord(manifest["sbom"], "release SBOM")
+          : mutableRecord(
+              (manifest["gates"] as readonly unknown[])[0],
+              "release Gate",
+            );
+      const referencedPath =
+        artifact === "SBOM"
+          ? String(reference["path"])
+          : String(reference["artifactPath"]);
+      const artifactPath = join(repositoryRoot, ...referencedPath.split("/"));
+
+      const result = await withOfflineAttestationVerifier(
+        () =>
+          finalizeGraphFreezeFromEvidence(
+            finalizerInput(repositoryRoot, {
+              evidence: { releaseManifest },
+            }),
+          ),
+        async () => {
+          await writeFile(
+            artifactPath,
+            Buffer.concat([
+              await readFile(artifactPath),
+              Buffer.from("changed after verification", "utf8"),
+            ]),
+          );
+        },
+      );
+
+      expect(result.decision.blockingReasons).toContain(
+        "EvidenceHashMismatch: release-manifest",
+      );
+      expect(result.decision.signoff).toBeUndefined();
+    },
+  );
+
   it.each([
     {
       name: "stale provider evidence",

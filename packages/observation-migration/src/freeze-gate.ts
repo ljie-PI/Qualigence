@@ -4161,22 +4161,19 @@ async function validateReleaseManifestEvidence(
         ]
       : [];
   });
-  await assertManifestPathConfined(
-    input,
-    sbomReference,
-    "release manifest.sbom",
-    [releasePrefix],
-  );
-  await Promise.all(
-    gateReferences.map((reference, index) =>
-      assertManifestPathConfined(
+  await Promise.all([
+    readManifestEvidenceBytes(input, sbomReference, "release manifest.sbom", [
+      releasePrefix,
+    ]),
+    ...gateReferences.map((reference, index) =>
+      readManifestEvidenceBytes(
         input,
         reference,
         `release manifest.gates[${index}]`,
         [releasePrefix],
       ),
     ),
-  );
+  ]);
 
   return {
     signoff: {
