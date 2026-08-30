@@ -22,6 +22,8 @@ import {
   GRAPH_FREEZE_DECISION_VERSION,
   GraphFreezeFinalizationError,
   REQUIRED_SHARED_CORE_FIELDS,
+  REQUIRED_SECURITY_VETO_ITEM_IDS,
+  REQUIRED_WINDOWS_CHECKLIST_SECTION_COUNTS,
   decideGraphFreeze,
   type FreezeDecision,
   type FreezeDecisionStatus,
@@ -850,6 +852,29 @@ function assertStringArray(
   return values;
 }
 
+function assertStringArrayAllowEmpty(
+  value: unknown,
+  label: string,
+): readonly string[] {
+  if (
+    !Array.isArray(value) ||
+    value.some((entry) => typeof entry !== "string" || entry.trim() === "")
+  ) {
+    throw new EvidenceValidationError(
+      "EvidenceMalformed",
+      `${label} must be a string array`,
+    );
+  }
+  const values = value as string[];
+  if (new Set(values).size !== values.length) {
+    throw new EvidenceValidationError(
+      "EvidenceDuplicate",
+      `${label} contains duplicate values`,
+    );
+  }
+  return values;
+}
+
 async function validateConformanceTarget(
   value: unknown,
   label: string,
@@ -1353,6 +1378,45 @@ async function repositoryCommitGraph(
   }
 }
 
+async function repositoryChangedFiles(
+  repositoryRoot: string,
+  fromCommit: string,
+  toCommit: string,
+  signal?: AbortSignal,
+): Promise<readonly string[]> {
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      [
+        "-C",
+        repositoryRoot,
+        "diff",
+        "--name-only",
+        "--diff-filter=ACDMRTUXB",
+        fromCommit,
+        toCommit,
+        "--",
+      ],
+      { maxBuffer: 4 * 1024 * 1024, signal },
+    );
+    return stdout
+      .split(/\r?\n/u)
+      .filter((path) => path !== "")
+      .sort();
+  } catch (error) {
+    if (signal?.aborted === true) {
+      throw new GraphFreezeFinalizationError(
+        "FinalizationAborted",
+        "Graph freeze finalization was cancelled during review-diff validation",
+      );
+    }
+    throw new EvidenceValidationError(
+      "GithubReviewedHeadMismatch",
+      `local repository cannot verify the reviewed-to-remote diff: ${errorMessage(error)}`,
+    );
+  }
+}
+
 function assertCanonicalPullRequest(
   ticket: number,
   pullRequestNumber: number,
@@ -1373,14 +1437,14 @@ function assertCanonicalPullRequest(
   }
 }
 
-function validatePullRequest(
+async function validatePullRequest(
   value: unknown,
   ticket: number,
   input: FinalizeGraphFreezeInput,
   graph: ReadonlyMap<string, readonly string[]>,
   ancestors: ReadonlySet<string>,
   seenPullRequests: Set<number>,
-): void {
+): Promise<void> {
   const label = `Ticket ${ticket} pull request`;
   const pullRequest = asRecord(value, label);
   assertKeys(
@@ -1451,11 +1515,20 @@ function validatePullRequest(
         `${label} remote head does not descend from its reviewed head`,
       );
     }
-    const postReviewFiles = assertStringArray(
-      pullRequest["postReviewFiles"],
-      `${label}.postReviewFiles`,
+    const postReviewFiles = [
+      ...assertStringArrayAllowEmpty(
+        pullRequest["postReviewFiles"],
+        `${label}.postReviewFiles`,
+      ),
+    ].sort();
+    const actualPostReviewFiles = await repositoryChangedFiles(
+      input.repositoryRoot,
+      reviewedHead,
+      remoteHead,
+      input.signal,
     );
     if (
+      canonicalJson(postReviewFiles) !== canonicalJson(actualPostReviewFiles) ||
       postReviewFiles.some(
         (path) =>
           !(
@@ -1470,6 +1543,17 @@ function validatePullRequest(
         `${label} changed code or tests after its reviewed head`,
       );
     }
+  } else if (
+    pullRequest["postReviewFiles"] !== undefined &&
+    assertStringArrayAllowEmpty(
+      pullRequest["postReviewFiles"],
+      `${label}.postReviewFiles`,
+    ).length !== 0
+  ) {
+    throw new EvidenceValidationError(
+      "GithubReviewedHeadMismatch",
+      `${label} records a post-review diff for an unchanged reviewed head`,
+    );
   }
   assertStringArray(pullRequest["changedFiles"], `${label}.changedFiles`);
   const checkSuite = asRecord(pullRequest["checkSuite"], `${label}.checkSuite`);
@@ -1534,6 +1618,7 @@ async function validateGithubClosureEvidence(
       "commit",
       "generatedAt",
       "evidenceClass",
+      "capture",
       "umbrellaIssue",
       "tickets",
       "remediation",
@@ -1548,6 +1633,41 @@ async function validateGithubClosureEvidence(
     );
   }
   assertBinding(evidence, input, "GitHub closure evidence");
+  const capture = asRecord(evidence["capture"], "GitHub API capture");
+  assertKeys(
+    capture,
+    [
+      "source",
+      "apiVersion",
+      "repositoryUrl",
+      "actor",
+      "capturedAt",
+      "payloadSha256",
+      "ticket35ClosingPullRequest",
+    ],
+    "GitHub API capture",
+  );
+  const capturedAt = requireString(capture, "capturedAt", "GitHub API capture");
+  const capturePayload = {
+    umbrellaIssue: evidence["umbrellaIssue"],
+    tickets: evidence["tickets"],
+    remediation: evidence["remediation"],
+    integratedAcceptance: evidence["integratedAcceptance"],
+  };
+  if (
+    capture["source"] !== "github-graphql-and-rest-api" ||
+    capture["apiVersion"] !== "2022-11-28" ||
+    capture["repositoryUrl"] !==
+      `https://api.github.com/repos/${input.repository}` ||
+    requireString(capture, "actor", "GitHub API capture").trim() === "" ||
+    capturedAt !== evidence["generatedAt"] ||
+    capture["payloadSha256"] !== sha256Hex(canonicalJson(capturePayload))
+  ) {
+    throw new EvidenceValidationError(
+      "GithubCaptureInvalid",
+      "GitHub closure evidence must hash-bind one canonical URL/API capture",
+    );
+  }
   if (evidence["umbrellaIssue"] !== 67) {
     throw new EvidenceValidationError(
       "GithubUmbrellaMismatch",
@@ -1687,7 +1807,7 @@ async function validateGithubClosureEvidence(
           `resolved legacy Ticket ${legacyTicket} has no merged pull request`,
         );
       }
-      validatePullRequest(
+      await validatePullRequest(
         ticket["pullRequest"],
         legacyTicket,
         input,
@@ -1696,7 +1816,7 @@ async function validateGithubClosureEvidence(
         seenPullRequests,
       );
     } else if (ticket["pullRequest"] !== undefined) {
-      validatePullRequest(
+      await validatePullRequest(
         ticket["pullRequest"],
         legacyTicket,
         input,
@@ -1805,7 +1925,7 @@ async function validateGithubClosureEvidence(
           `resolved remediation Ticket ${legacyTicket} has no merged pull request`,
         );
       }
-      validatePullRequest(
+      await validatePullRequest(
         item["pullRequest"],
         legacyTicket,
         input,
@@ -1814,7 +1934,7 @@ async function validateGithubClosureEvidence(
         seenPullRequests,
       );
     } else if (item["pullRequest"] !== undefined) {
-      validatePullRequest(
+      await validatePullRequest(
         item["pullRequest"],
         legacyTicket,
         input,
@@ -1862,6 +1982,22 @@ async function validateGithubClosureEvidence(
     throw new EvidenceValidationError(
       "GithubIntegratedAcceptanceInvalid",
       "Ticket 48 must remain the ready-for-human, non-substitutable final acceptance authority blocked by Ticket 35",
+    );
+  }
+  const ticket35 = tickets.find(
+    (value) => asRecord(value, "GitHub closure ticket")["legacyTicket"] === 35,
+  );
+  const ticket35PullRequest =
+    ticket35 === undefined
+      ? undefined
+      : asRecord(
+          asRecord(ticket35, "legacy Ticket 35")["pullRequest"],
+          "legacy Ticket 35 pull request",
+        )["number"];
+  if (capture["ticket35ClosingPullRequest"] !== ticket35PullRequest) {
+    throw new EvidenceValidationError(
+      "GithubPullRequestUnexpected",
+      "Ticket 35 must use the closing pull request linked by the Issue #165 API capture",
     );
   }
 }
@@ -2148,10 +2284,41 @@ async function validateProviderEvidence(
   return references;
 }
 
-function validateBenchmarkEvidence(
+async function repositoryJsonAtCommit(
+  input: FinalizeGraphFreezeInput,
+  path: string,
+): Promise<{ readonly value: unknown; readonly sha256: string }> {
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      ["-C", input.repositoryRoot, "show", `${input.commit}:${path}`],
+      {
+        maxBuffer: 16 * 1024 * 1024,
+        signal: input.signal,
+      },
+    );
+    return {
+      value: JSON.parse(stdout),
+      sha256: sha256Hex(stdout),
+    };
+  } catch (error) {
+    if (input.signal?.aborted === true) {
+      throw new GraphFreezeFinalizationError(
+        "FinalizationAborted",
+        "Graph freeze finalization was cancelled during benchmark-source validation",
+      );
+    }
+    throw new EvidenceValidationError(
+      "BenchmarkSourceInvalid",
+      `cannot read ${path} from selected commit: ${errorMessage(error)}`,
+    );
+  }
+}
+
+async function validateBenchmarkEvidence(
   value: unknown,
   input: FinalizeGraphFreezeInput,
-): void {
+): Promise<void> {
   const evidence = asRecord(value, "benchmark evidence");
   assertKeys(
     evidence,
@@ -2162,6 +2329,7 @@ function validateBenchmarkEvidence(
       "commit",
       "generatedAt",
       "evidenceClass",
+      "sourceFiles",
       "manifest",
       "groundTruth",
       "runnerInputs",
@@ -2179,7 +2347,57 @@ function validateBenchmarkEvidence(
   }
   assertBinding(evidence, input, "benchmark evidence");
 
+  const requiredSourcePaths = [
+    "benchmarks/detection-v1/manifest.json",
+    "benchmarks/detection-v1/ground-truth/cart.json",
+    "benchmarks/detection-v1/scenarios/cart-normal.json",
+    "benchmarks/detection-v1/scenarios/cart-known-bugs.json",
+  ] as const;
+  const sourceFiles = requireArray(
+    evidence,
+    "sourceFiles",
+    "benchmark evidence",
+  );
+  if (sourceFiles.length !== requiredSourcePaths.length) {
+    throw new EvidenceValidationError(
+      "BenchmarkSourceInvalid",
+      "benchmark evidence must bind every canonical Detection Benchmark v1 source",
+    );
+  }
+  const canonicalSources = new Map<string, unknown>();
+  for (const requiredPath of requiredSourcePaths) {
+    const matches = sourceFiles.filter(
+      (value) =>
+        asRecord(value, "benchmark source file")["path"] === requiredPath,
+    );
+    if (matches.length !== 1) {
+      throw new EvidenceValidationError(
+        "BenchmarkSourceInvalid",
+        `benchmark source ${requiredPath} is missing or duplicated`,
+      );
+    }
+    const source = asRecord(matches[0], `benchmark source ${requiredPath}`);
+    assertKeys(source, ["path", "sha256"], `benchmark source ${requiredPath}`);
+    const canonical = await repositoryJsonAtCommit(input, requiredPath);
+    if (source["sha256"] !== canonical.sha256) {
+      throw new EvidenceValidationError(
+        "BenchmarkSourceInvalid",
+        `benchmark source ${requiredPath} does not bind the selected commit bytes`,
+      );
+    }
+    canonicalSources.set(requiredPath, canonical.value);
+  }
+
   const manifest = asRecord(evidence["manifest"], "benchmark manifest");
+  if (
+    canonicalJson(manifest) !==
+    canonicalJson(canonicalSources.get(requiredSourcePaths[0]))
+  ) {
+    throw new EvidenceValidationError(
+      "BenchmarkSourceInvalid",
+      "benchmark manifest does not match the selected commit",
+    );
+  }
   assertKeys(
     manifest,
     [
@@ -2372,6 +2590,15 @@ function validateBenchmarkEvidence(
     evidence["groundTruth"],
     "benchmark ground truth",
   );
+  if (
+    canonicalJson(groundTruth) !==
+    canonicalJson(canonicalSources.get(requiredSourcePaths[1]))
+  ) {
+    throw new EvidenceValidationError(
+      "BenchmarkSourceInvalid",
+      "benchmark ground truth does not match the selected commit",
+    );
+  }
   assertKeys(
     groundTruth,
     ["benchmarkVersion", "defects"],
@@ -2550,6 +2777,74 @@ function validateBenchmarkEvidence(
         `benchmark scenario definition ${scenarioId} is missing, duplicated, or inconsistent`,
       );
     }
+    const manifestScenario = scenariosById.get(scenarioId);
+    const missionRef = manifestScenario?.["missionRef"];
+    const sourcePath =
+      typeof missionRef === "string"
+        ? `benchmarks/detection-v1/${missionRef}`
+        : undefined;
+    const sourceDefinition =
+      sourcePath === undefined ? undefined : canonicalSources.get(sourcePath);
+    if (sourceDefinition === undefined) {
+      throw new EvidenceValidationError(
+        "BenchmarkSourceInvalid",
+        `benchmark scenario ${scenarioId} has no selected-commit source`,
+      );
+    }
+    const canonicalDefinition = asRecord(
+      sourceDefinition,
+      `canonical benchmark scenario ${scenarioId}`,
+    );
+    const canonicalSeedUrl = new URL(
+      requireString(
+        canonicalDefinition,
+        "seedUrl",
+        `canonical benchmark scenario ${scenarioId}`,
+      ),
+    );
+    const expectedSeedUrl = {
+      origin: canonicalSeedUrl.origin,
+      pathname: canonicalSeedUrl.pathname,
+    };
+    const canonicalStates = requireArray(
+      canonicalDefinition,
+      "states",
+      `canonical benchmark scenario ${scenarioId}`,
+    );
+    const expectedStateBindings = canonicalStates.map((value, stateIndex) => {
+      const state = asRecord(
+        value,
+        `canonical benchmark scenario ${scenarioId} state ${stateIndex}`,
+      );
+      return {
+        id: state["id"],
+        advanceNodeId: state["advanceNodeId"] ?? null,
+        signals: state["signals"] ?? [],
+      };
+    });
+    const actualStateBindings = states.map((value, stateIndex) => {
+      const state = asRecord(
+        value,
+        `benchmark scenario definition ${scenarioId} state ${stateIndex}`,
+      );
+      return {
+        id: state["id"],
+        advanceNodeId: state["advanceNodeId"],
+        signals: state["signals"],
+      };
+    });
+    if (
+      canonicalDefinition["scenarioId"] !== scenarioId ||
+      canonicalDefinition["mode"] !== definition["mode"] ||
+      canonicalJson(definition["seedUrl"]) !== canonicalJson(expectedSeedUrl) ||
+      canonicalJson(actualStateBindings) !==
+        canonicalJson(expectedStateBindings)
+    ) {
+      throw new EvidenceValidationError(
+        "BenchmarkSourceInvalid",
+        `benchmark runner binding for ${scenarioId} does not match its selected-commit scenario`,
+      );
+    }
     if (definition["seedUrl"] !== undefined) {
       const seedUrl = asRecord(
         definition["seedUrl"],
@@ -2603,21 +2898,6 @@ function validateBenchmarkEvidence(
         );
       }
       stateIds.add(stateId);
-    }
-    if (
-      states.some((value) => {
-        const advanceNodeId = (value as Record<string, unknown>)[
-          "advanceNodeId"
-        ];
-        return (
-          typeof advanceNodeId === "string" && !stateIds.has(advanceNodeId)
-        );
-      })
-    ) {
-      throw new EvidenceValidationError(
-        "BenchmarkRunnerBindingInvalid",
-        `benchmark scenario definition ${scenarioId} references an unknown advance node`,
-      );
     }
     definitionsByScenario.set(scenarioId, definition);
   }
@@ -3058,7 +3338,12 @@ async function assertManifestPathConfined(
   }
 }
 
-function windowsChecklistPayload(bytes: Buffer): Record<string, unknown> {
+interface WindowsChecklistPayload {
+  readonly checklist: Record<string, unknown>;
+  readonly signatures: unknown;
+}
+
+function windowsChecklistPayload(bytes: Buffer): WindowsChecklistPayload {
   const candidates: unknown[] = [];
   const text = bytes.toString("utf8");
   try {
@@ -3079,16 +3364,172 @@ function windowsChecklistPayload(bytes: Buffer): Record<string, unknown> {
     const nested =
       record["WindowsChecklistEvidence"] ?? record["windowsChecklistEvidence"];
     if (nested !== undefined) {
-      return asRecord(nested, "WindowsChecklistEvidence");
+      const checklist = asRecord(nested, "WindowsChecklistEvidence");
+      return {
+        checklist,
+        signatures:
+          record["WindowsChecklistSignatures"] ??
+          record["windowsChecklistSignatures"] ??
+          checklist["signatures"],
+      };
     }
     if (record["checklistVersion"] !== undefined) {
-      return record;
+      return { checklist: record, signatures: record["signatures"] };
     }
   }
   throw new EvidenceValidationError(
     "WindowsChecklistEvidenceUnavailable",
     "signed Windows evidence has no machine-readable checklist payload",
   );
+}
+
+function validateCompleteWindowsChecklist(
+  payload: WindowsChecklistPayload,
+  manifestWindows: Record<string, unknown>,
+  input: FinalizeGraphFreezeInput,
+): void {
+  const { checklist } = payload;
+  const securityVetoIds = assertStringArray(
+    checklist["securityVetoItemIds"],
+    "WindowsChecklistEvidence.securityVetoItemIds",
+  );
+  if (
+    new Set(securityVetoIds).size !== securityVetoIds.length ||
+    securityVetoIds.length !== REQUIRED_SECURITY_VETO_ITEM_IDS.length ||
+    REQUIRED_SECURITY_VETO_ITEM_IDS.some(
+      (requiredId) => !securityVetoIds.includes(requiredId),
+    )
+  ) {
+    throw new EvidenceValidationError(
+      "WindowsEvidenceVetoInvalid",
+      "Windows checklist security-veto ids are duplicated or non-canonical",
+    );
+  }
+
+  const items = requireArray(checklist, "items", "WindowsChecklistEvidence");
+  const seenItemIds = new Set<string>();
+  const sectionCounts = new Map<string, number>();
+  for (const [index, value] of items.entries()) {
+    const item = asRecord(value, `WindowsChecklistEvidence.items[${index}]`);
+    assertKeys(
+      item,
+      ["section", "id", "description", "result", "note"],
+      `WindowsChecklistEvidence.items[${index}]`,
+    );
+    const id = requireString(
+      item,
+      "id",
+      `WindowsChecklistEvidence.items[${index}]`,
+    );
+    const section = requireString(
+      item,
+      "section",
+      `WindowsChecklistEvidence.items[${index}]`,
+    );
+    requireString(
+      item,
+      "description",
+      `WindowsChecklistEvidence.items[${index}]`,
+    );
+    if (
+      seenItemIds.has(id) ||
+      (item["result"] !== "pass" && item["result"] !== "not_applicable")
+    ) {
+      throw new EvidenceValidationError(
+        seenItemIds.has(id)
+          ? "WindowsEvidenceItemDuplicate"
+          : "WindowsEvidenceItemIncomplete",
+        `Windows checklist item ${id} is duplicated or incomplete`,
+      );
+    }
+    seenItemIds.add(id);
+    sectionCounts.set(section, (sectionCounts.get(section) ?? 0) + 1);
+  }
+  for (const [section, count] of Object.entries(
+    REQUIRED_WINDOWS_CHECKLIST_SECTION_COUNTS,
+  )) {
+    if (sectionCounts.get(section) !== count) {
+      throw new EvidenceValidationError(
+        "WindowsEvidenceItemMissing",
+        `Windows checklist section ${section} does not contain all ${count} versioned items`,
+      );
+    }
+  }
+  if (
+    sectionCounts.size !==
+    Object.keys(REQUIRED_WINDOWS_CHECKLIST_SECTION_COUNTS).length
+  ) {
+    throw new EvidenceValidationError(
+      "WindowsEvidenceItemInvalid",
+      "Windows checklist contains an unknown executable section",
+    );
+  }
+  const conclusions = items
+    .map((value) => asRecord(value, "Windows checklist conclusion"))
+    .filter((item) => item["section"] === "17");
+  if (
+    conclusions.filter((item) => item["result"] === "pass").length !== 1 ||
+    conclusions.some(
+      (item) =>
+        item["result"] !== "pass" && item["result"] !== "not_applicable",
+    )
+  ) {
+    throw new EvidenceValidationError(
+      "WindowsEvidenceConclusionInvalid",
+      "Windows checklist must contain exactly one passing acceptance conclusion",
+    );
+  }
+
+  const operatorName = requireString(
+    checklist,
+    "operatorName",
+    "WindowsChecklistEvidence",
+  ).trim();
+  const reviewerName = requireString(
+    checklist,
+    "reviewerName",
+    "WindowsChecklistEvidence",
+  ).trim();
+  const requiredSigners = new Set([operatorName, reviewerName]);
+  for (const [label, value] of [
+    ["embedded", payload.signatures],
+    ["manifest", manifestWindows["signatures"]],
+  ] as const) {
+    if (!Array.isArray(value) || value.length !== requiredSigners.size) {
+      throw new EvidenceValidationError(
+        "WindowsEvidenceSignerInvalid",
+        `${label} Windows signatures must contain exactly the operator and reviewer`,
+      );
+    }
+    const signers = value.map((signature, index) =>
+      requireString(
+        asRecord(signature, `${label} Windows signature ${index}`),
+        "signer",
+        `${label} Windows signature ${index}`,
+      ).trim(),
+    );
+    if (
+      new Set(signers).size !== signers.length ||
+      signers.some((signer) => !requiredSigners.has(signer))
+    ) {
+      throw new EvidenceValidationError(
+        "WindowsEvidenceSignerInvalid",
+        `${label} Windows signatures are duplicated or use an unexpected identity`,
+      );
+    }
+  }
+
+  const executedAt = requireString(
+    checklist,
+    "executedAt",
+    "WindowsChecklistEvidence",
+  );
+  if (Date.parse(executedAt) > Date.parse(input.decidedAt)) {
+    throw new EvidenceValidationError(
+      "EvidenceStale",
+      "Windows checklist was executed after the decision timestamp",
+    );
+  }
 }
 
 function verifierErrorCode(error: unknown): string {
@@ -3104,9 +3545,7 @@ function verifierErrorCode(error: unknown): string {
 
 function releaseVerifierEnvironment(): NodeJS.ProcessEnv {
   const environment = { ...process.env };
-  if (environment["NODE_ENV"] !== "test" || environment["VITEST"] !== "true") {
-    delete environment["QUALIGENCE_ALLOW_OFFLINE_ATTESTATION_FIXTURES"];
-  }
+  delete environment["QUALIGENCE_ALLOW_OFFLINE_ATTESTATION_FIXTURES"];
   return environment;
 }
 
@@ -3215,7 +3654,9 @@ async function validateReleaseManifestEvidence(
     input.repositoryRoot,
     ...windowsReference.path.split("/"),
   );
-  const checklist = windowsChecklistPayload(await readFile(windowsPath));
+  const windowsPayload = windowsChecklistPayload(await readFile(windowsPath));
+  const checklist = windowsPayload.checklist;
+  validateCompleteWindowsChecklist(windowsPayload, windows, input);
   const productVersion = requireString(
     checklist,
     "productVersion",

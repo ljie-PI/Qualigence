@@ -35,6 +35,25 @@ export const REQUIRED_SECURITY_VETO_ITEM_IDS = [
   "16.unknown-side-effect-not-replayed",
 ] as const;
 
+/** The checkbox count in each executable section of the versioned checklist. */
+export const REQUIRED_WINDOWS_CHECKLIST_SECTION_COUNTS = {
+  "3": 9,
+  "4": 6,
+  "5": 13,
+  "6": 22,
+  "7": 13,
+  "8": 9,
+  "9": 12,
+  "10": 8,
+  "11": 9,
+  "12": 10,
+  "13": 6,
+  "14": 9,
+  "15": 7,
+  "16": 13,
+  "17": 3,
+} as const;
+
 /**
  * The shared cross-platform (Web + Desktop) core node/state/checkpoint fields
  * both targets must validate identically for the v1 schema to be considered
@@ -304,6 +323,14 @@ function validateWindowsChecklist(
     reasons.push("Windows checklist is missing a reviewer signature");
     ok = false;
   }
+  if (
+    isNonEmpty(evidence.operatorName) &&
+    isNonEmpty(evidence.reviewerName) &&
+    evidence.operatorName.trim() === evidence.reviewerName.trim()
+  ) {
+    reasons.push("Windows checklist operator and reviewer must be distinct");
+    ok = false;
+  }
   if (!isValidIsoTimestamp(evidence.executedAt)) {
     reasons.push("Windows checklist has no valid execution timestamp");
     ok = false;
@@ -317,13 +344,57 @@ function validateWindowsChecklist(
     );
     ok = false;
   }
-  if (evidence.items.length === 0) {
-    reasons.push("Windows checklist evidence has no recorded items");
+  const byId = new Map<string, WindowsChecklistItemEvidence>();
+  const sectionCounts = new Map<string, number>();
+  for (const item of evidence.items) {
+    if (
+      !isNonEmpty(item.id) ||
+      !isNonEmpty(item.section) ||
+      !isNonEmpty(item.description)
+    ) {
+      reasons.push(
+        "Windows checklist contains an item with incomplete identity",
+      );
+      ok = false;
+      continue;
+    }
+    if (byId.has(item.id)) {
+      reasons.push(`checklist item ${item.id} is duplicated`);
+      ok = false;
+    }
+    byId.set(item.id, item);
+    sectionCounts.set(item.section, (sectionCounts.get(item.section) ?? 0) + 1);
+    if (item.result === "fail" || item.result === "not_run") {
+      reasons.push(`checklist item ${item.id} is incomplete (${item.result})`);
+      ok = false;
+    }
+  }
+  for (const [section, count] of Object.entries(
+    REQUIRED_WINDOWS_CHECKLIST_SECTION_COUNTS,
+  )) {
+    if (sectionCounts.get(section) !== count) {
+      reasons.push(
+        `Windows checklist section ${section} has ${sectionCounts.get(section) ?? 0} of ${count} required items`,
+      );
+      ok = false;
+    }
+  }
+  if (
+    sectionCounts.size !==
+    Object.keys(REQUIRED_WINDOWS_CHECKLIST_SECTION_COUNTS).length
+  ) {
+    reasons.push("Windows checklist contains an unknown executable section");
     ok = false;
   }
 
-  const byId = new Map(evidence.items.map((item) => [item.id, item]));
   const attested = new Set(evidence.securityVetoItemIds);
+  if (
+    attested.size !== evidence.securityVetoItemIds.length ||
+    attested.size !== REQUIRED_SECURITY_VETO_ITEM_IDS.length
+  ) {
+    reasons.push("security-veto item ids are duplicated or non-canonical");
+    ok = false;
+  }
   for (const requiredId of REQUIRED_SECURITY_VETO_ITEM_IDS) {
     if (!attested.has(requiredId)) {
       reasons.push(`security-veto item ${requiredId} was not attested`);
@@ -342,12 +413,17 @@ function validateWindowsChecklist(
     }
   }
 
-  // A `fail` on ANY item — not only the veto set — blocks the freeze.
-  for (const item of evidence.items) {
-    if (item.result === "fail") {
-      reasons.push(`checklist item ${item.id} failed`);
-      ok = false;
-    }
+  const conclusions = evidence.items.filter((item) => item.section === "17");
+  if (
+    conclusions.filter((item) => item.result === "pass").length !== 1 ||
+    conclusions.some(
+      (item) => item.result !== "pass" && item.result !== "not_applicable",
+    )
+  ) {
+    reasons.push(
+      "Windows checklist must record exactly one passing acceptance conclusion",
+    );
+    ok = false;
   }
   return ok;
 }

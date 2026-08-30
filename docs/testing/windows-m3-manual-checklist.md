@@ -287,6 +287,12 @@ artifacts/manual-acceptance/<product-version>/<date>-windows-m3.md
 
 ### 18.2 安全否决项 → 稳定 id 映射
 
+`items[]` 必须逐项记录第 3–17 节的全部 149 个复选项，并保持各节数量
+`3:9, 4:6, 5:13, 6:22, 7:13, 8:9, 9:12, 10:8, 11:9, 12:10,
+13:6, 14:9, 15:7, 16:13, 17:3`。每个 `id` 必须唯一；不得出现 `fail`
+或 `not_run`。第 17 节必须恰有一个 `pass` 结论，其余两个结论标记为
+`not_applicable`。缺项、重复项或未完成项都会阻塞 freeze。
+
 第 16 节的每一条安全否决项对应一个稳定 id；`decideGraphFreeze` 要求这些 id 全部以 `result: "pass"` 出现在 `items[]` 中，且 `securityVetoItemIds` 必须完整声明它们（常量 `REQUIRED_SECURITY_VETO_ITEM_IDS`）。任意一条缺失或非 `pass`（`fail`/`not_run`/`not_applicable`）都会阻塞 freeze。
 
 | 第 16 节条目                                                         | `WindowsChecklistItemEvidence.id`       |

@@ -5,6 +5,24 @@
   "commit": "aca8a487268ef6baab644ff47401efc85b1d1a26",
   "generatedAt": "2026-08-30T07:30:00.000Z",
   "evidenceClass": "real",
+  "sourceFiles": [
+    {
+      "path": "benchmarks/detection-v1/manifest.json",
+      "sha256": "7b8ce8965c0368aa0bc07ae52a1ece939dafd8bde7fc697f9a62e9e70264fbe0"
+    },
+    {
+      "path": "benchmarks/detection-v1/ground-truth/cart.json",
+      "sha256": "ff45bf6717650455d0ad59758d744838654b640a1e8b96f384050be13c8aa3dd"
+    },
+    {
+      "path": "benchmarks/detection-v1/scenarios/cart-normal.json",
+      "sha256": "726560044dacff004f2fcfd0548869c0002044708cc35b3dd309e8ff5673e8cf"
+    },
+    {
+      "path": "benchmarks/detection-v1/scenarios/cart-known-bugs.json",
+      "sha256": "fb3dace5943da45a7931d9be0d8a8c79c645622196c68ed42c9629d2524d1684"
+    }
+  ],
   "manifest": {
     "schemaVersion": "detection-benchmark/v1",
     "benchmarkVersion": "detection-v1",
@@ -97,7 +115,7 @@
     "policy": {
       "seedSkillBundleIds": [],
       "allowedActionKinds": ["navigate", "click", "input"],
-      "allowedOrigins": ["https://fixture.qualigence.test"],
+      "allowedOrigins": ["https://shop.fixture.local"],
       "maximumSteps": 40,
       "maximumWallClockMs": 1800000,
       "maximumModelTokens": 200000,
@@ -110,15 +128,27 @@
         "scenarioId": "cart-normal",
         "mode": "normal",
         "seedUrl": {
-          "origin": "https://fixture.qualigence.test",
-          "pathname": "/cart-normal"
+          "origin": "https://shop.fixture.local",
+          "pathname": "/cart"
         },
         "states": [
           {
-            "id": "normal-start",
+            "id": "cart",
+            "advanceNodeId": "go-checkout",
+            "signals": [],
+            "observationGraphSha256": "090cdc8859074325868dcd7502eb60db2e1df36d1685634e7367290ce1797070"
+          },
+          {
+            "id": "checkout",
+            "advanceNodeId": "go-confirm",
+            "signals": [],
+            "observationGraphSha256": "20061a4557c51af8c830c00048a2804352684321f362664a77f9d077e597f7c9"
+          },
+          {
+            "id": "confirmation",
             "advanceNodeId": null,
             "signals": [],
-            "observationGraphSha256": "7777777777777777777777777777777777777777777777777777777777777777"
+            "observationGraphSha256": "059e4654b07da15e59efda5cfadf4dd8d59518a5a0b6fc2da94c16e963174b1c"
           }
         ]
       },
@@ -126,43 +156,78 @@
         "scenarioId": "cart-known-bugs",
         "mode": "fault",
         "seedUrl": {
-          "origin": "https://fixture.qualigence.test",
-          "pathname": "/cart-known-bugs"
+          "origin": "https://shop.fixture.local",
+          "pathname": "/cart"
         },
         "states": [
           {
-            "id": "fault-start",
+            "id": "cart",
+            "advanceNodeId": "go-checkout",
+            "signals": [
+              {
+                "defectId": "cart-price-mismatch",
+                "confidence": "high"
+              },
+              {
+                "defectId": "cart-quantity-overflow",
+                "confidence": "high"
+              }
+            ],
+            "observationGraphSha256": "d98e0440398ac1e2e2348e334b0aeb99b4b6b64c0459487581aea0dfcad85709"
+          },
+          {
+            "id": "checkout",
+            "advanceNodeId": "go-confirm",
+            "signals": [
+              {
+                "defectId": "cart-discount-not-applied",
+                "confidence": "high"
+              },
+              {
+                "defectId": "cart-total-rounding",
+                "confidence": "high"
+              }
+            ],
+            "observationGraphSha256": "64c5db9fb9c4f2befca4660bdb9f7500cd4ff01c95562f3cbe2ae8cfab5afe61"
+          },
+          {
+            "id": "confirmation",
             "advanceNodeId": null,
-            "signals": [],
-            "observationGraphSha256": "8888888888888888888888888888888888888888888888888888888888888888"
+            "signals": [
+              {
+                "defectId": "cart-checkout-500",
+                "confidence": "high"
+              }
+            ],
+            "observationGraphSha256": "a4e95b73601f7668d5dbe1a0d3d73edb9a3da3a00abf0bf8525646e5c2c0e4c4"
           }
         ]
       }
     ]
   },
   "report": {
-    "reportId": "252aff02fe340b14ebdc865743f8ecaba697a1957ad63284293155d04087f874",
+    "reportId": "0723b970e2e181fae4552fdb592f065d17dbf4d02e08ade0842e4e15d3a05efc",
     "benchmarkVersion": "detection-v1",
     "manifestSha256": "c95bf01310a636f6662e7dee912436c4b150eff8593003bde326d9768ae5992b",
     "profileSha256": "426b19246d2fa3f4edf0ccb3a7c0ae462958e37f9c60c241a856202f8a389099",
     "groundTruthSha256": "39010dc7b9f20d8f7e3a052098ac58363d0cdcdb299ace10b9363227156b3bf2",
-    "inputSha256": "05baf70af6e7df2c9a47b326a6aa0d9f42ac412a5c641729585ecb335987f9f7",
+    "inputSha256": "06cf47ec79e7db1abeddb07400c0074893176c64ac7bbd98030d7a001b4b9950",
     "profileStatus": "reference",
     "attemptIds": [
-      "ad0a8770e39d6d42ca1dcc5d0641523d3258bd26f8c60c2bba7128765637578d:1fdd8964056a6304797f09e3b389181f538c5ce7ac997b37b0207457c7507df7",
-      "ad0a8770e39d6d42ca1dcc5d0641523d3258bd26f8c60c2bba7128765637578d:234ce56878a55ee1642c01a88019a0c352a7411f133b4f972274c9f6bae265ce",
-      "ad0a8770e39d6d42ca1dcc5d0641523d3258bd26f8c60c2bba7128765637578d:347be3b2d607312b3d6f7cfc73695fdd8eea91c52c95257a7892c1ea30e612f7",
-      "ad0a8770e39d6d42ca1dcc5d0641523d3258bd26f8c60c2bba7128765637578d:986cb1e9a149b2a13ce671acba4d00aa60b032474fa675d081783d021483cbe8",
-      "ad0a8770e39d6d42ca1dcc5d0641523d3258bd26f8c60c2bba7128765637578d:dacfb8c22b87cc2131939f07fdcdbb1a9477f8cd4e5d41969118de97d8509376",
-      "ad0a8770e39d6d42ca1dcc5d0641523d3258bd26f8c60c2bba7128765637578d:f523a95354248ca0621bd52b04a8f1d9fe1545f91822eeda77f9638371af6b6e"
+      "3444b9832c26f240c81ea7301b2ba8665b27bc12ef053e42b4a86842b014a5a5:2a5c0591ebbb1150ad3e79bd1db3b14fba3003b6e8cfae344bedfe65c3ad08ee",
+      "3444b9832c26f240c81ea7301b2ba8665b27bc12ef053e42b4a86842b014a5a5:657d25d12cd529a988df3b4b891fea6c61c2dfee8559b20cd91a9418e70254a0",
+      "3444b9832c26f240c81ea7301b2ba8665b27bc12ef053e42b4a86842b014a5a5:81e74a1d9c8cd3a003c9459f8d7fd8e690dacbbec162b17e3a38341d76915e18",
+      "3444b9832c26f240c81ea7301b2ba8665b27bc12ef053e42b4a86842b014a5a5:b215c01f79bc7891924fb02f91ed030dde425db45cbc5ee24988f770d3f641fe",
+      "3444b9832c26f240c81ea7301b2ba8665b27bc12ef053e42b4a86842b014a5a5:ef555f5083e828198d165cedab95c2f43134c9ff9877fb146f35a2135b082af8",
+      "3444b9832c26f240c81ea7301b2ba8665b27bc12ef053e42b4a86842b014a5a5:fb897cdb55b5ab10011d62f7fe8a0dfe02a5ef0f45972e94769850e06d3cd634"
     ],
     "attemptBindingSha256s": [
-      "1fdd8964056a6304797f09e3b389181f538c5ce7ac997b37b0207457c7507df7",
-      "234ce56878a55ee1642c01a88019a0c352a7411f133b4f972274c9f6bae265ce",
-      "347be3b2d607312b3d6f7cfc73695fdd8eea91c52c95257a7892c1ea30e612f7",
-      "986cb1e9a149b2a13ce671acba4d00aa60b032474fa675d081783d021483cbe8",
-      "dacfb8c22b87cc2131939f07fdcdbb1a9477f8cd4e5d41969118de97d8509376",
-      "f523a95354248ca0621bd52b04a8f1d9fe1545f91822eeda77f9638371af6b6e"
+      "2a5c0591ebbb1150ad3e79bd1db3b14fba3003b6e8cfae344bedfe65c3ad08ee",
+      "657d25d12cd529a988df3b4b891fea6c61c2dfee8559b20cd91a9418e70254a0",
+      "81e74a1d9c8cd3a003c9459f8d7fd8e690dacbbec162b17e3a38341d76915e18",
+      "b215c01f79bc7891924fb02f91ed030dde425db45cbc5ee24988f770d3f641fe",
+      "ef555f5083e828198d165cedab95c2f43134c9ff9877fb146f35a2135b082af8",
+      "fb897cdb55b5ab10011d62f7fe8a0dfe02a5ef0f45972e94769850e06d3cd634"
     ],
     "metrics": {
       "p0Recall": {
@@ -197,8 +262,8 @@
   },
   "attempts": [
     {
-      "attemptId": "ad0a8770e39d6d42ca1dcc5d0641523d3258bd26f8c60c2bba7128765637578d:234ce56878a55ee1642c01a88019a0c352a7411f133b4f972274c9f6bae265ce",
-      "bindingSha256": "234ce56878a55ee1642c01a88019a0c352a7411f133b4f972274c9f6bae265ce",
+      "attemptId": "3444b9832c26f240c81ea7301b2ba8665b27bc12ef053e42b4a86842b014a5a5:b215c01f79bc7891924fb02f91ed030dde425db45cbc5ee24988f770d3f641fe",
+      "bindingSha256": "b215c01f79bc7891924fb02f91ed030dde425db45cbc5ee24988f770d3f641fe",
       "profileSha256": "426b19246d2fa3f4edf0ccb3a7c0ae462958e37f9c60c241a856202f8a389099",
       "scenarioId": "cart-normal",
       "mode": "normal",
@@ -207,8 +272,8 @@
       "invocationIds": ["benchmark-invocation-1"]
     },
     {
-      "attemptId": "ad0a8770e39d6d42ca1dcc5d0641523d3258bd26f8c60c2bba7128765637578d:986cb1e9a149b2a13ce671acba4d00aa60b032474fa675d081783d021483cbe8",
-      "bindingSha256": "986cb1e9a149b2a13ce671acba4d00aa60b032474fa675d081783d021483cbe8",
+      "attemptId": "3444b9832c26f240c81ea7301b2ba8665b27bc12ef053e42b4a86842b014a5a5:ef555f5083e828198d165cedab95c2f43134c9ff9877fb146f35a2135b082af8",
+      "bindingSha256": "ef555f5083e828198d165cedab95c2f43134c9ff9877fb146f35a2135b082af8",
       "profileSha256": "426b19246d2fa3f4edf0ccb3a7c0ae462958e37f9c60c241a856202f8a389099",
       "scenarioId": "cart-normal",
       "mode": "normal",
@@ -217,8 +282,8 @@
       "invocationIds": ["benchmark-invocation-2"]
     },
     {
-      "attemptId": "ad0a8770e39d6d42ca1dcc5d0641523d3258bd26f8c60c2bba7128765637578d:f523a95354248ca0621bd52b04a8f1d9fe1545f91822eeda77f9638371af6b6e",
-      "bindingSha256": "f523a95354248ca0621bd52b04a8f1d9fe1545f91822eeda77f9638371af6b6e",
+      "attemptId": "3444b9832c26f240c81ea7301b2ba8665b27bc12ef053e42b4a86842b014a5a5:fb897cdb55b5ab10011d62f7fe8a0dfe02a5ef0f45972e94769850e06d3cd634",
+      "bindingSha256": "fb897cdb55b5ab10011d62f7fe8a0dfe02a5ef0f45972e94769850e06d3cd634",
       "profileSha256": "426b19246d2fa3f4edf0ccb3a7c0ae462958e37f9c60c241a856202f8a389099",
       "scenarioId": "cart-normal",
       "mode": "normal",
@@ -227,8 +292,8 @@
       "invocationIds": ["benchmark-invocation-3"]
     },
     {
-      "attemptId": "ad0a8770e39d6d42ca1dcc5d0641523d3258bd26f8c60c2bba7128765637578d:1fdd8964056a6304797f09e3b389181f538c5ce7ac997b37b0207457c7507df7",
-      "bindingSha256": "1fdd8964056a6304797f09e3b389181f538c5ce7ac997b37b0207457c7507df7",
+      "attemptId": "3444b9832c26f240c81ea7301b2ba8665b27bc12ef053e42b4a86842b014a5a5:657d25d12cd529a988df3b4b891fea6c61c2dfee8559b20cd91a9418e70254a0",
+      "bindingSha256": "657d25d12cd529a988df3b4b891fea6c61c2dfee8559b20cd91a9418e70254a0",
       "profileSha256": "426b19246d2fa3f4edf0ccb3a7c0ae462958e37f9c60c241a856202f8a389099",
       "scenarioId": "cart-known-bugs",
       "mode": "fault",
@@ -258,8 +323,8 @@
       "invocationIds": ["benchmark-invocation-4"]
     },
     {
-      "attemptId": "ad0a8770e39d6d42ca1dcc5d0641523d3258bd26f8c60c2bba7128765637578d:347be3b2d607312b3d6f7cfc73695fdd8eea91c52c95257a7892c1ea30e612f7",
-      "bindingSha256": "347be3b2d607312b3d6f7cfc73695fdd8eea91c52c95257a7892c1ea30e612f7",
+      "attemptId": "3444b9832c26f240c81ea7301b2ba8665b27bc12ef053e42b4a86842b014a5a5:2a5c0591ebbb1150ad3e79bd1db3b14fba3003b6e8cfae344bedfe65c3ad08ee",
+      "bindingSha256": "2a5c0591ebbb1150ad3e79bd1db3b14fba3003b6e8cfae344bedfe65c3ad08ee",
       "profileSha256": "426b19246d2fa3f4edf0ccb3a7c0ae462958e37f9c60c241a856202f8a389099",
       "scenarioId": "cart-known-bugs",
       "mode": "fault",
@@ -289,8 +354,8 @@
       "invocationIds": ["benchmark-invocation-5"]
     },
     {
-      "attemptId": "ad0a8770e39d6d42ca1dcc5d0641523d3258bd26f8c60c2bba7128765637578d:dacfb8c22b87cc2131939f07fdcdbb1a9477f8cd4e5d41969118de97d8509376",
-      "bindingSha256": "dacfb8c22b87cc2131939f07fdcdbb1a9477f8cd4e5d41969118de97d8509376",
+      "attemptId": "3444b9832c26f240c81ea7301b2ba8665b27bc12ef053e42b4a86842b014a5a5:81e74a1d9c8cd3a003c9459f8d7fd8e690dacbbec162b17e3a38341d76915e18",
+      "bindingSha256": "81e74a1d9c8cd3a003c9459f8d7fd8e690dacbbec162b17e3a38341d76915e18",
       "profileSha256": "426b19246d2fa3f4edf0ccb3a7c0ae462958e37f9c60c241a856202f8a389099",
       "scenarioId": "cart-known-bugs",
       "mode": "fault",
@@ -323,37 +388,37 @@
   "invocations": [
     {
       "invocationId": "benchmark-invocation-1",
-      "attemptId": "ad0a8770e39d6d42ca1dcc5d0641523d3258bd26f8c60c2bba7128765637578d:234ce56878a55ee1642c01a88019a0c352a7411f133b4f972274c9f6bae265ce",
+      "attemptId": "3444b9832c26f240c81ea7301b2ba8665b27bc12ef053e42b4a86842b014a5a5:b215c01f79bc7891924fb02f91ed030dde425db45cbc5ee24988f770d3f641fe",
       "status": "succeeded",
       "usageStatus": "known"
     },
     {
       "invocationId": "benchmark-invocation-2",
-      "attemptId": "ad0a8770e39d6d42ca1dcc5d0641523d3258bd26f8c60c2bba7128765637578d:986cb1e9a149b2a13ce671acba4d00aa60b032474fa675d081783d021483cbe8",
+      "attemptId": "3444b9832c26f240c81ea7301b2ba8665b27bc12ef053e42b4a86842b014a5a5:ef555f5083e828198d165cedab95c2f43134c9ff9877fb146f35a2135b082af8",
       "status": "succeeded",
       "usageStatus": "known"
     },
     {
       "invocationId": "benchmark-invocation-3",
-      "attemptId": "ad0a8770e39d6d42ca1dcc5d0641523d3258bd26f8c60c2bba7128765637578d:f523a95354248ca0621bd52b04a8f1d9fe1545f91822eeda77f9638371af6b6e",
+      "attemptId": "3444b9832c26f240c81ea7301b2ba8665b27bc12ef053e42b4a86842b014a5a5:fb897cdb55b5ab10011d62f7fe8a0dfe02a5ef0f45972e94769850e06d3cd634",
       "status": "succeeded",
       "usageStatus": "known"
     },
     {
       "invocationId": "benchmark-invocation-4",
-      "attemptId": "ad0a8770e39d6d42ca1dcc5d0641523d3258bd26f8c60c2bba7128765637578d:1fdd8964056a6304797f09e3b389181f538c5ce7ac997b37b0207457c7507df7",
+      "attemptId": "3444b9832c26f240c81ea7301b2ba8665b27bc12ef053e42b4a86842b014a5a5:657d25d12cd529a988df3b4b891fea6c61c2dfee8559b20cd91a9418e70254a0",
       "status": "succeeded",
       "usageStatus": "known"
     },
     {
       "invocationId": "benchmark-invocation-5",
-      "attemptId": "ad0a8770e39d6d42ca1dcc5d0641523d3258bd26f8c60c2bba7128765637578d:347be3b2d607312b3d6f7cfc73695fdd8eea91c52c95257a7892c1ea30e612f7",
+      "attemptId": "3444b9832c26f240c81ea7301b2ba8665b27bc12ef053e42b4a86842b014a5a5:2a5c0591ebbb1150ad3e79bd1db3b14fba3003b6e8cfae344bedfe65c3ad08ee",
       "status": "succeeded",
       "usageStatus": "known"
     },
     {
       "invocationId": "benchmark-invocation-6",
-      "attemptId": "ad0a8770e39d6d42ca1dcc5d0641523d3258bd26f8c60c2bba7128765637578d:dacfb8c22b87cc2131939f07fdcdbb1a9477f8cd4e5d41969118de97d8509376",
+      "attemptId": "3444b9832c26f240c81ea7301b2ba8665b27bc12ef053e42b4a86842b014a5a5:81e74a1d9c8cd3a003c9459f8d7fd8e690dacbbec162b17e3a38341d76915e18",
       "status": "succeeded",
       "usageStatus": "known"
     }

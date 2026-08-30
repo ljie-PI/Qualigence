@@ -58,14 +58,18 @@ binding before any decision is published.
 The decision covers these capabilities:
 
 1. GitHub Issue #67's exact ticket dependency graph plus
-   PR/review/check/commit closure.
+   PR/review/check/commit closure, hash-bound to a canonical GraphQL/REST API
+   capture. Local Git objects independently verify merge ancestry and any
+   reviewed-head-to-remote-head documentation-only delta.
 2. Candidate migration inventory and Freeze Report.
 3. Hash-linked command-produced Web/Desktop Graph v1 and lossless `uia/v1`
    conformance reports.
 4. Hash-linked Ticket 29/30 native Windows reports.
 5. Real-provider smoke and complete stdout/stderr/persisted-output redaction
    reports that rehash the scanned bytes, plus Reference Model runner-input,
-   attempt-binding, and one-attempt-per-invocation evidence.
+   attempt-binding, and one-attempt-per-invocation evidence. Benchmark
+   manifest, ground truth, and scenario sources must match their bytes in the
+   selected commit.
 6. Ticket 34 release manifest, exact mandatory CI archives, signed local/RDP
    Windows checklist, SBOM, provenance, and attestations.
 
@@ -74,6 +78,9 @@ or weaken Ticket 34's release authority. It atomically creates exactly
 `artifacts/release/<version>/graph-freeze-decision.json`. Byte-identical replay is
 idempotent, conflicting replay never overwrites the terminal artifact, and
 cancellation or persistence failure cannot return success-shaped output.
+The production finalizer always removes Ticket 34's offline-attestation fixture
+override; tests use a test-only wrapper that delegates to the authoritative
+verifier with fixture mode isolated inside the temporary test repository.
 
 Any missing or invalid capability yields `status: "candidate"` with exact stable
 `blockingReasons[]` and no `signoff`. `signoff` is structurally present only when
