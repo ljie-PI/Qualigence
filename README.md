@@ -105,7 +105,7 @@ A valid release manifest binds exactly one repository commit to:
 - provenance/attestation identifiers for the pushed images;
 - the mandatory same-commit Gate artifacts `gate-linux`, `gate-windows-rust`,
   `gate-self-hosted`, and `browser-e2e`;
-- the signed Ticket 31 Windows native acceptance evidence path and SHA-256.
+- the signed integrated Ticket 48 Windows native acceptance evidence path and SHA-256.
 
 Verify a generated manifest and render digest-only Compose with:
 
@@ -125,8 +125,8 @@ named artifact by immutable artifact ID and recomputes its SHA-256.
 The release verifier rejects mutable tags, non-`sha256:` image references,
 wrong repository/commit, duplicate or missing Gate names, cross-commit Gate
 artifacts, mismatched SBOM or Windows-evidence hashes, and unsigned Windows
-evidence. Ticket 31 and Ticket 46 evidence are phase-2 release dependencies;
-missing human/provider evidence is a blocked release, never a synthetic pass.
+evidence. Integrated Ticket 48 owns all human, provider, publication, and final
+freeze evidence; missing evidence is a blocked release, never a synthetic pass.
 
 ### Live Smoke（显式 opt-in，不在普通 Gate）
 

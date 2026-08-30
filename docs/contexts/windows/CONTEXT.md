@@ -41,7 +41,7 @@
 
 - Architecture: `docs/architecture/2026-07-21-qualigence-open-source-architecture-design.md` sections 5.8, 6.2-6.5, and 7.
 - Related contexts: `docs/contexts/execution/CONTEXT.md`, `docs/contexts/protocol/CONTEXT.md`, `docs/contexts/evidence/CONTEXT.md`, and `docs/contexts/deployment/CONTEXT.md`.
-- Tracked work: legacy Tickets 26 ([#159](https://github.com/ljie-PI/Qualigence/issues/159)), 27 ([#160](https://github.com/ljie-PI/Qualigence/issues/160)), 28 ([#167](https://github.com/ljie-PI/Qualigence/issues/167)), 29 ([#168](https://github.com/ljie-PI/Qualigence/issues/168)), 30 ([#161](https://github.com/ljie-PI/Qualigence/issues/161)), 31 ([#164](https://github.com/ljie-PI/Qualigence/issues/164)), 32 ([#158](https://github.com/ljie-PI/Qualigence/issues/158)), and 35 ([#165](https://github.com/ljie-PI/Qualigence/issues/165)).
+- Tracked work: legacy implementation Tickets 26 ([#159](https://github.com/ljie-PI/Qualigence/issues/159)), 27 ([#160](https://github.com/ljie-PI/Qualigence/issues/160)), 28 ([#167](https://github.com/ljie-PI/Qualigence/issues/167)), 29 ([#168](https://github.com/ljie-PI/Qualigence/issues/168)), 30 ([#161](https://github.com/ljie-PI/Qualigence/issues/161)), 32 ([#158](https://github.com/ljie-PI/Qualigence/issues/158)), and 35 ([#165](https://github.com/ljie-PI/Qualigence/issues/165)); legacy Ticket 31 ([#164](https://github.com/ljie-PI/Qualigence/issues/164)) is superseded by integrated human acceptance Ticket 48 ([#181](https://github.com/ljie-PI/Qualigence/issues/181)).
 - Checklists: `docs/testing/windows-m3-manual-checklist.md` and `docs/testing/observation-graph-v1-freeze-checklist.md`.
 
 ## Verification

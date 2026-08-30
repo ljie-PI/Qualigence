@@ -42,7 +42,7 @@ production Companion daemon, captures it through real UIA, drives supported
 actions, and writes machine-readable evidence.
 
 See the `manualWindowsVerification` block in `reference-app.fixture.json` and
-`docs/testing/windows-m3-manual-checklist.md` for the remaining Ticket 31
+`docs/testing/windows-m3-manual-checklist.md` for the remaining Ticket 48
 operator signoff. A human must, on real Windows 11 hardware against the compiled
 app:
 

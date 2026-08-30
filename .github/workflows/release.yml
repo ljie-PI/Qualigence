@@ -12,27 +12,27 @@ on:
         required: false
         type: string
       windows_evidence_path:
-        description: Repository-relative signed Ticket 31 Windows evidence path
+        description: Repository-relative signed Ticket 48 Windows evidence path
         required: true
         type: string
       windows_evidence_sha256:
-        description: SHA-256 of the signed Ticket 31 Windows evidence file
+        description: SHA-256 of the signed Ticket 48 Windows evidence file
         required: true
         type: string
       windows_evidence_operator:
-        description: Operator signer recorded in the Ticket 31 evidence
+        description: Operator signer recorded in the Ticket 48 evidence
         required: true
         type: string
       windows_evidence_operator_signature_sha256:
-        description: SHA-256 of the Ticket 31 operator signature record
+        description: SHA-256 of the Ticket 48 operator signature record
         required: true
         type: string
       windows_evidence_reviewer:
-        description: Independent reviewer signer recorded in the Ticket 31 evidence
+        description: Independent reviewer signer recorded in the Ticket 48 evidence
         required: true
         type: string
       windows_evidence_reviewer_signature_sha256:
-        description: SHA-256 of the Ticket 31 reviewer signature record
+        description: SHA-256 of the Ticket 48 reviewer signature record
         required: true
         type: string
 

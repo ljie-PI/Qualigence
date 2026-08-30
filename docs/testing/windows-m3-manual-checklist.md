@@ -3,7 +3,8 @@
 - 适用范围：M3 Windows UI Automation、AppTarget、Desktop Companion
 - 执行方式：人工
 - 自动化 VM Gate：不适用
-- Windows authority: `docs/contexts/windows/CONTEXT.md` and legacy Tickets 29 ([#168](https://github.com/ljie-PI/Qualigence/issues/168)), 30 ([#161](https://github.com/ljie-PI/Qualigence/issues/161)), and 31 ([#164](https://github.com/ljie-PI/Qualigence/issues/164))
+- Windows implementation authority: `docs/contexts/windows/CONTEXT.md` and legacy Tickets 29 ([#168](https://github.com/ljie-PI/Qualigence/issues/168)) and 30 ([#161](https://github.com/ljie-PI/Qualigence/issues/161))
+- Human execution, signatures, release publication, and final freeze authority: integrated Ticket 48 ([#181](https://github.com/ljie-PI/Qualigence/issues/181)); legacy Ticket 31 ([#164](https://github.com/ljie-PI/Qualigence/issues/164)) is superseded
 - Graph v1 authority: `docs/contexts/evidence/CONTEXT.md` and legacy Tickets 22 ([#151](https://github.com/ljie-PI/Qualigence/issues/151)), 23 ([#146](https://github.com/ljie-PI/Qualigence/issues/146)), 24 ([#154](https://github.com/ljie-PI/Qualigence/issues/154)), and 25 ([#163](https://github.com/ljie-PI/Qualigence/issues/163))
 
 ## 1. 使用说明

@@ -1,10 +1,12 @@
 # Observation Graph v1 — Freeze Checklist (candidate)
 
 Status: **candidate** — Observation Graph v1 is a candidate and MUST NOT be
-frozen until tickets 22-35 produce and validate the Graph migration, Desktop,
-native Windows, manual, CI, and release evidence below. Current migration
-tooling emits only `status: "candidate"` and `gate.frozen: false`; ticket 35
-owns the deterministic `frozen` transition.
+frozen until Tickets 22-35 produce the Graph migration, Desktop, native Windows,
+CI, release, and deterministic finalizer implementation, and integrated Ticket
+48 validates the real Windows, provider, publication, and final release evidence.
+Current migration tooling emits only `status: "candidate"` and
+`gate.frozen: false`; Ticket 35 owns the deterministic finalizer implementation,
+while Ticket 48 alone invokes it for the final human-approved transition.
 
 ## Candidate Baseline
 
@@ -69,6 +71,6 @@ Any missing/invalid input yields `status: "candidate"` with `blockingReasons[]`.
 > (`packages/observation-migration/src/freeze-gate.ts`) is structurally unable to
 > emit `frozen` — it has no parameter to inject Windows evidence. A dedicated
 > test asserts the generated artifact never contains `"status":"frozen"` (the
-> "cannot lie about being frozen" invariant). v1 becomes `frozen` only after a
-> human completes the manual checklist and someone invokes `decideGraphFreeze`
-> with that real evidence in a follow-up action.
+> "cannot lie about being frozen" invariant). v1 becomes `frozen` only after
+> integrated Ticket 48 completes every real-environment check and invokes the
+> merged Ticket 35 finalizer with that immutable evidence.

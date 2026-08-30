@@ -25,9 +25,9 @@ When a skill says to publish tracked work, create a GitHub Issue. When it says t
 
 ## Production-Closure Authority
 
-GitHub Issue [#67](https://github.com/ljie-PI/Qualigence/issues/67) contains the complete production-closure specification and is the umbrella for its 47 native sub-issues. Those issues preserve the legacy ticket number in their titles, full ticket bodies, completion evidence, triage state, and direct implementation dependencies.
+GitHub Issue [#67](https://github.com/ljie-PI/Qualigence/issues/67) contains the complete production-closure specification and is the umbrella for its 48 native sub-issues. Those issues preserve the legacy ticket number in their titles, full ticket bodies, completion evidence, triage state, and direct implementation dependencies.
 
-Read the umbrella and complete selected sub-issue before closure work. Use the native sub-issue and dependency relationships for navigation; explicit phase-two or final-resolution dependencies remain authoritative in each issue body when representing them as native dependencies would create a cycle.
+Read the umbrella and complete selected sub-issue before closure work. Ticket 35 ([#165](https://github.com/ljie-PI/Qualigence/issues/165)) is the sole remaining implementation frontier. Ticket 48 ([#181](https://github.com/ljie-PI/Qualigence/issues/181)) is the sole human, credentialed-provider, real-environment, release-publication, and final-freeze acceptance ticket and is natively blocked by Ticket 35.
 
 ## Review Findings and Deferred Follow-ups
 
