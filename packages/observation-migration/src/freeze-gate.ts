@@ -1275,6 +1275,18 @@ const REQUIRED_REMEDIATION_PULL_REQUESTS = [
 ] as const;
 
 const REQUIRED_TICKET_34_REMEDIATION_PULL_REQUEST = 183;
+const REQUIRED_TICKET_34_REVIEWED_HEAD =
+  "f0e71af1a81430283983446e1a911c8bee5768b9";
+const REQUIRED_TICKET_34_REMOTE_HEAD =
+  "8d90bf088a66d03dc1e7c1a1edfb518fd8969584";
+const REQUIRED_TICKET_34_POST_REVIEW_EVIDENCE =
+  ".scratch/remaining-production-closure/issues/34-release-sbom-provenance-manifest.md";
+const REQUIRED_TICKET_34_REMEDIATION_REVIEWED_HEAD =
+  "dab2bc0021d3665ff00368a18ea02712346442fd";
+const REQUIRED_TICKET_34_REMEDIATION_REMOTE_HEAD =
+  "1e3be71ec89391f34654c48e69e3fb233c4e6252";
+const REQUIRED_TICKET_34_REMEDIATION_REVIEWED_TREE =
+  "6891de1111f98dc59ec63822fc7728643f4abb30";
 
 const KNOWN_CLOSURE_PULL_REQUESTS = new Set<number>();
 for (const value of [
@@ -1554,6 +1566,27 @@ async function validatePullRequest(
       ? undefined
       : requireCommit(pullRequest["reviewedTree"], `${label}.reviewedTree`);
   if (
+    number === 133 &&
+    (reviewedHead !== REQUIRED_TICKET_34_REVIEWED_HEAD ||
+      remoteHead !== REQUIRED_TICKET_34_REMOTE_HEAD)
+  ) {
+    throw new EvidenceValidationError(
+      "GithubReviewedHeadMismatch",
+      `${label} does not bind PR #133's canonical reviewed and remote heads`,
+    );
+  }
+  if (
+    number === REQUIRED_TICKET_34_REMEDIATION_PULL_REQUEST &&
+    (reviewedHead !== REQUIRED_TICKET_34_REMEDIATION_REVIEWED_HEAD ||
+      remoteHead !== REQUIRED_TICKET_34_REMEDIATION_REMOTE_HEAD ||
+      reviewedTree !== REQUIRED_TICKET_34_REMEDIATION_REVIEWED_TREE)
+  ) {
+    throw new EvidenceValidationError(
+      "GithubReviewedHeadMismatch",
+      `${label} does not bind PR #183's canonical reviewed, remote, and tree identities`,
+    );
+  }
+  if (
     reviewedTree !== undefined &&
     reviewedTree !==
       (await repositoryTreeHash(
@@ -1617,6 +1650,9 @@ async function validatePullRequest(
           !(
             path === "README.md" ||
             path.startsWith("docs/") ||
+            (ticket === 34 &&
+              number === 133 &&
+              path === REQUIRED_TICKET_34_POST_REVIEW_EVIDENCE) ||
             path ===
               `artifacts/release/${input.version}/graph-freeze-decision.json`
           ),

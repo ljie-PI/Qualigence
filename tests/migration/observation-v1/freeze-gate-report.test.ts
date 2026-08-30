@@ -51,6 +51,10 @@ const TICKET_34_REVIEWED_HEAD =
   "dab2bc0021d3665ff00368a18ea02712346442fd";
 const TICKET_34_REVIEWED_TREE =
   "6891de1111f98dc59ec63822fc7728643f4abb30";
+const TICKET_34_ORIGINAL_REVIEWED_HEAD =
+  "f0e71af1a81430283983446e1a911c8bee5768b9";
+const TICKET_34_ORIGINAL_POST_REVIEW_EVIDENCE =
+  ".scratch/remaining-production-closure/issues/34-release-sbom-provenance-manifest.md";
 const CLOSURE_ISSUES = [
   140, 145, 143, 136, 139, 138, 141, 135, 137, 144, 134, 142, 157, 147, 155,
   150, 152, 153, 156, 149, 148, 151, 146, 154, 163, 159, 160, 167, 168, 161,
@@ -532,12 +536,13 @@ function closurePullRequest(legacyTicket: number) {
     );
   }
   const [pullRequestNumber, head, mergeCommit] = pullRequest;
+  const ticket34Original = legacyTicket === 34;
   return {
     number: pullRequestNumber,
     url: `https://github.com/ljie-PI/Qualigence/pull/${pullRequestNumber}`,
     state: "closed",
     mergedAt: "2026-08-29T00:00:00.000Z",
-    reviewedHead: head,
+    reviewedHead: ticket34Original ? TICKET_34_ORIGINAL_REVIEWED_HEAD : head,
     remoteHead: head,
     mergeCommit,
     changedFiles: ["packages/observation-migration/src/index.ts"],
@@ -553,6 +558,9 @@ function closurePullRequest(legacyTicket: number) {
         commit: head,
       },
     ],
+    ...(ticket34Original
+      ? { postReviewFiles: [TICKET_34_ORIGINAL_POST_REVIEW_EVIDENCE] }
+      : {}),
   };
 }
 
@@ -1826,6 +1834,40 @@ describe("finalizeGraphFreezeFromEvidence", () => {
     );
 
     expect(result.decision.blockingReasons).toContain(blocker);
+  });
+
+  it("rejects PR #133 evidence that collapses its reviewed and remote heads", async () => {
+    const repositoryRoot = await mkdtemp(
+      join(tmpdir(), "qualigence-freeze-ticket34-original-review-"),
+    );
+    fixtureRoots.push(repositoryRoot);
+    const githubClosure = githubClosureFixture();
+    const ticket34 = mutableRecord(
+      githubClosure.tickets[33],
+      "legacy Ticket 34",
+    );
+    const pullRequest = mutableRecord(
+      ticket34["pullRequest"],
+      "legacy Ticket 34 pull request",
+    );
+    pullRequest["reviewedHead"] = pullRequest["remoteHead"];
+    pullRequest["postReviewFiles"] = [];
+    const reference = await writeEvidenceObject(
+      repositoryRoot,
+      "v0.1.0-candidate",
+      "github-closure.json",
+      githubClosure,
+    );
+
+    const result = await finalizeGraphFreezeFromEvidence(
+      finalizerInput(repositoryRoot, {
+        evidence: { githubClosure: reference },
+      }),
+    );
+
+    expect(result.decision.blockingReasons).toContain(
+      "GithubReviewedHeadMismatch: github-closure",
+    );
   });
 
   it("rejects GitHub closure state without canonical URL/API capture provenance", async () => {
