@@ -12,6 +12,7 @@ export const FREEZE_DECISION_VERSION =
  */
 export const WINDOWS_M3_CHECKLIST_VERSION =
   "windows-m3-manual-checklist/v1" as const;
+export const REQUIRED_RUNNER_PROTOCOL_VERSION = "runner-protocol/v1" as const;
 
 /**
  * The stable ids of the manual checklist's Section 16 security-veto items. Every
@@ -324,6 +325,12 @@ function validateWindowsChecklist(
   if (evidence.checklistVersion !== WINDOWS_M3_CHECKLIST_VERSION) {
     reasons.push(
       `Windows checklist version ${evidence.checklistVersion} is not ${WINDOWS_M3_CHECKLIST_VERSION}`,
+    );
+    ok = false;
+  }
+  if (evidence.runnerProtocolVersion !== REQUIRED_RUNNER_PROTOCOL_VERSION) {
+    reasons.push(
+      `Windows checklist does not bind ${REQUIRED_RUNNER_PROTOCOL_VERSION}`,
     );
     ok = false;
   }

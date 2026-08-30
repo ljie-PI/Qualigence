@@ -66,7 +66,7 @@ function validWindowsChecklistEvidence(
   return {
     checklistVersion: WINDOWS_M3_CHECKLIST_VERSION,
     productVersion: "2026.08.02",
-    runnerProtocolVersion: "runner-protocol/1",
+    runnerProtocolVersion: "runner-protocol/v1",
     windowsBuild: "26100.1742",
     interactiveSessionType: "local",
     operatorName: "Grace Hopper",
@@ -227,6 +227,23 @@ describe("decideGraphFreeze", () => {
 
     expect(decision.status).toBe("candidate");
     expect(decision.inputs.windowsChecklistValid).toBe(false);
+  });
+
+  it("stays candidate when the checklist binds an incompatible Runner protocol", () => {
+    const decision = decideGraphFreeze(
+      cleanCandidateReport(),
+      validWindowsChecklistEvidence({
+        runnerProtocolVersion: "runner-protocol/v2",
+      }),
+      validSchemaConformanceEvidence(),
+      NOW,
+    );
+
+    expect(decision.status).toBe("candidate");
+    expect(decision.inputs.windowsChecklistValid).toBe(false);
+    expect(decision.blockingReasons).toContain(
+      "Windows checklist does not bind runner-protocol/v1",
+    );
   });
 
   it("stays candidate when the checklist lacks an operator or reviewer signature", () => {

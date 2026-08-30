@@ -739,6 +739,7 @@ function sha256(value: string | Buffer): string {
 
 async function withOfflineAttestationVerifier<T>(
   action: () => Promise<T>,
+  afterVerify?: () => Promise<void>,
 ): Promise<T> {
   const restore = setReleaseVerifierRunnerForTests(async (invocation) => {
     const verifierPath = invocation.args[0];
@@ -762,6 +763,7 @@ async function withOfflineAttestationVerifier<T>(
       signal: invocation.signal,
       timeout: 120_000,
     });
+    await afterVerify?.();
   });
   try {
     return await action();
@@ -1332,7 +1334,7 @@ function validWindowsChecklistEvidence(): WindowsChecklistEvidence {
   return {
     checklistVersion: WINDOWS_M3_CHECKLIST_VERSION,
     productVersion: "2026.08.02",
-    runnerProtocolVersion: "runner-protocol/1",
+    runnerProtocolVersion: "runner-protocol/v1",
     windowsBuild: "26100.1742",
     interactiveSessionType: "local",
     operatorName: "Grace Hopper",
@@ -1799,6 +1801,101 @@ describe("finalizeGraphFreezeFromEvidence", () => {
     );
   });
 
+  it("accepts an exact decision-artifact-only post-review commit", async () => {
+    const repositoryRoot = await mkdtemp(
+      join(tmpdir(), "qualigence-freeze-github-evidence-delta-"),
+    );
+    fixtureRoots.push(repositoryRoot);
+    await ensureGitObjectStore(repositoryRoot);
+    const version = "v0.1.0-candidate";
+    const decisionPath = `artifacts/release/${version}/graph-freeze-decision.json`;
+    await mkdir(join(repositoryRoot, "artifacts", "release", version), {
+      recursive: true,
+    });
+    await writeFile(join(repositoryRoot, ...decisionPath.split("/")), "{}\n");
+    await execFileAsync("git", [
+      "-C",
+      repositoryRoot,
+      "read-tree",
+      FINALIZER_COMMIT,
+    ]);
+    await execFileAsync("git", [
+      "-C",
+      repositoryRoot,
+      "add",
+      "--",
+      decisionPath,
+    ]);
+    const { stdout: tree } = await execFileAsync("git", [
+      "-C",
+      repositoryRoot,
+      "write-tree",
+    ]);
+    const gitEnvironment = {
+      ...process.env,
+      GIT_AUTHOR_NAME: "Fixture Author",
+      GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+      GIT_AUTHOR_DATE: "2026-08-30T07:00:00.000Z",
+      GIT_COMMITTER_NAME: "Fixture Author",
+      GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+      GIT_COMMITTER_DATE: "2026-08-30T07:00:00.000Z",
+    };
+    const { stdout: evidenceCommit } = await execFileAsync(
+      "git",
+      [
+        "-C",
+        repositoryRoot,
+        "commit-tree",
+        tree.trim(),
+        "-p",
+        FINALIZER_COMMIT,
+        "-m",
+        "Add reviewed decision evidence",
+      ],
+      { env: gitEnvironment },
+    );
+    const selectedCommit = evidenceCommit.trim();
+    await rm(join(repositoryRoot, ...decisionPath.split("/")));
+    const githubClosure = githubClosureFixture();
+    githubClosure.commit = selectedCommit;
+    const ticket35 = mutableRecord(
+      githubClosure.tickets[34],
+      "legacy Ticket 35",
+    );
+    const pullRequest = mutableRecord(
+      ticket35["pullRequest"],
+      "legacy Ticket 35 pull request",
+    );
+    pullRequest["reviewedHead"] = FINALIZER_COMMIT;
+    pullRequest["remoteHead"] = selectedCommit;
+    pullRequest["mergeCommit"] = selectedCommit;
+    pullRequest["postReviewFiles"] = [decisionPath];
+    const checks = pullRequest["checks"];
+    if (!Array.isArray(checks) || checks[0] === undefined) {
+      throw new Error("Ticket 35 fixture has no check");
+    }
+    mutableRecord(checks[0], "Ticket 35 check")["commit"] = selectedCommit;
+    const reference = await writeEvidenceObject(
+      repositoryRoot,
+      version,
+      "github-closure.json",
+      githubClosure,
+    );
+
+    const result = await finalizeGraphFreezeFromEvidence({
+      ...finalizerInput(repositoryRoot, {
+        evidence: { githubClosure: reference },
+      }),
+      commit: selectedCommit,
+    });
+
+    expect(
+      result.decision.capabilities.find(
+        (capability) => capability.id === "github-closure",
+      ),
+    ).toMatchObject({ status: "verified", blockers: [] });
+  });
+
   it("rejects contradictory GitHub ticket status evidence", async () => {
     const repositoryRoot = await mkdtemp(
       join(tmpdir(), "qualigence-freeze-github-invalid-"),
@@ -2030,6 +2127,41 @@ describe("finalizeGraphFreezeFromEvidence", () => {
     issue31["todoCompleted"] = 0;
     issue31["supersededBy"] = 48;
     delete ticket31["pullRequest"];
+    const reference = await writeEvidenceObject(
+      repositoryRoot,
+      "v0.1.0-candidate",
+      "github-closure.json",
+      githubClosure,
+    );
+
+    const result = await finalizeGraphFreezeFromEvidence(
+      finalizerInput(repositoryRoot, {
+        evidence: { githubClosure: reference },
+      }),
+    );
+
+    expect(
+      result.decision.capabilities.find(
+        (capability) => capability.id === "github-closure",
+      ),
+    ).toMatchObject({ status: "verified", blockers: [] });
+  });
+
+  it("accepts non-blocking deferred advanced-hardening remediation", async () => {
+    const repositoryRoot = await mkdtemp(
+      join(tmpdir(), "qualigence-freeze-github-deferred-"),
+    );
+    fixtureRoots.push(repositoryRoot);
+    const githubClosure = githubClosureFixture();
+    const remediation = mutableRecord(
+      githubClosure.remediation[0],
+      "deferred remediation",
+    );
+    remediation["classification"] = "deferred-advanced-hardening";
+    const issue = mutableRecord(remediation["issue"], "deferred issue");
+    issue["state"] = "open";
+    issue["status"] = "deferred";
+    delete remediation["pullRequest"];
     const reference = await writeEvidenceObject(
       repositoryRoot,
       "v0.1.0-candidate",
@@ -2411,6 +2543,56 @@ describe("finalizeGraphFreezeFromEvidence", () => {
     }
   });
 
+  it("rejects Windows evidence changed after Ticket 34 verification", async () => {
+    const repositoryRoot = await mkdtemp(
+      join(tmpdir(), "qualigence-freeze-windows-toctou-"),
+    );
+    fixtureRoots.push(repositoryRoot);
+    const version = "v0.1.0-candidate";
+    const releaseManifest = await writeReleaseFixture(repositoryRoot, version);
+    const manifest = mutableRecord(
+      JSON.parse(
+        await readFile(
+          join(repositoryRoot, ...releaseManifest.path.split("/")),
+          "utf8",
+        ),
+      ),
+      "release manifest",
+    );
+    const windowsReference = mutableRecord(
+      manifest["windowsEvidence"],
+      "Windows evidence reference",
+    );
+    const windowsPath = join(
+      repositoryRoot,
+      ...String(windowsReference["path"]).split("/"),
+    );
+
+    const result = await withOfflineAttestationVerifier(
+      () =>
+        finalizeGraphFreezeFromEvidence(
+          finalizerInput(repositoryRoot, {
+            evidence: { releaseManifest },
+          }),
+        ),
+      async () => {
+        const payload = mutableRecord(
+          JSON.parse(await readFile(windowsPath, "utf8")),
+          "signed Windows evidence",
+        );
+        mutableRecord(payload["WindowsChecklistEvidence"], "Windows checklist")[
+          "windowsBuild"
+        ] = "changed after verification";
+        await writeFile(windowsPath, `${JSON.stringify(payload, null, 2)}\n`);
+      },
+    );
+
+    expect(result.decision.blockingReasons).toContain(
+      "EvidenceHashMismatch: release-manifest",
+    );
+    expect(result.decision.signoff).toBeUndefined();
+  });
+
   it.each([
     {
       name: "stale provider evidence",
@@ -2743,6 +2925,7 @@ describe("finalizeGraphFreezeFromEvidence", () => {
     ["incomplete Windows checklist", "WindowsEvidenceItemMissing"],
     ["substituted Windows checklist item", "WindowsEvidenceItemInvalid"],
     ["duplicate Windows signer", "WindowsEvidenceSignerInvalid"],
+    ["incompatible Runner protocol", "WindowsEvidenceProtocolInvalid"],
     ["cross-commit CI artifact", "GateArtifactCommitMismatch"],
     ["invalid SBOM", "SbomSchemaInvalid"],
     ["mismatched provenance", "AttestationBundleHashMismatch"],
@@ -2773,7 +2956,8 @@ describe("finalizeGraphFreezeFromEvidence", () => {
       scenario === "duplicate Windows checklist item" ||
       scenario === "incomplete Windows checklist" ||
       scenario === "substituted Windows checklist item" ||
-      scenario === "duplicate Windows signer"
+      scenario === "duplicate Windows signer" ||
+      scenario === "incompatible Runner protocol"
     ) {
       const windowsReference = mutableRecord(
         manifest["windowsEvidence"],
@@ -2797,6 +2981,8 @@ describe("finalizeGraphFreezeFromEvidence", () => {
           throw new Error("Windows fixture has no signature");
         }
         signatures.push(structuredClone(signatures[0]));
+      } else if (scenario === "incompatible Runner protocol") {
+        checklist["runnerProtocolVersion"] = "runner-protocol/v2";
       } else {
         const items = checklist["items"];
         if (!Array.isArray(items) || items[0] === undefined) {

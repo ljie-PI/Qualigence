@@ -28,6 +28,7 @@ import { OBSERVATION_MIGRATOR_VERSION } from "./pre-v1-projector.js";
 import {
   GRAPH_FREEZE_DECISION_VERSION,
   GraphFreezeFinalizationError,
+  REQUIRED_RUNNER_PROTOCOL_VERSION,
   REQUIRED_SHARED_CORE_FIELDS,
   REQUIRED_SECURITY_VETO_ITEM_IDS,
   REQUIRED_WINDOWS_CHECKLIST_ITEM_IDS,
@@ -1542,7 +1543,9 @@ async function validatePullRequest(
           !(
             path === "README.md" ||
             path.startsWith("docs/") ||
-            path.startsWith(".github/ISSUE_TEMPLATE/")
+            path.startsWith(".github/ISSUE_TEMPLATE/") ||
+            path ===
+              `artifacts/release/${input.version}/graph-freeze-decision.json`
           ),
       )
     ) {
@@ -2085,12 +2088,15 @@ async function validateGithubClosureEvidence(
     );
     const classification = item["classification"];
     assertGithubIssueCapture(apiCapture, issue, []);
-    const expectedClassification =
-      legacyTicket === 46 ? "superseded" : "resolved-remediation";
+    const classificationIsAllowed =
+      legacyTicket === 46
+        ? classification === "superseded"
+        : classification === "resolved-remediation" ||
+          classification === "deferred-advanced-hardening";
     if (
       issue["number"] !== REQUIRED_REMEDIATION_ISSUES[legacyTicket - 36] ||
       issue["parentIssue"] !== 67 ||
-      classification !== expectedClassification ||
+      !classificationIsAllowed ||
       item["blocking"] !== false ||
       item["parentLegacyTicket"] !==
         REQUIRED_REMEDIATION_PARENTS[legacyTicket - 36]
@@ -3678,6 +3684,25 @@ async function assertManifestPathConfined(
   }
 }
 
+async function readManifestEvidenceBytes(
+  input: FinalizeGraphFreezeInput,
+  reference: GraphFreezeEvidenceReference,
+  label: string,
+  acceptedPrefixes: readonly string[],
+): Promise<Buffer> {
+  await assertManifestPathConfined(input, reference, label, acceptedPrefixes);
+  const path = resolve(input.repositoryRoot, ...reference.path.split("/"));
+  const bytes = await readFile(path);
+  const actualHash = createHash("sha256").update(bytes).digest("hex");
+  if (actualHash !== reference.sha256) {
+    throw new EvidenceValidationError(
+      "EvidenceHashMismatch",
+      `${label} expected ${reference.sha256} but found ${actualHash}`,
+    );
+  }
+  return bytes;
+}
+
 interface WindowsChecklistPayload {
   readonly checklist: Record<string, unknown>;
   readonly signatures: unknown;
@@ -4058,11 +4083,15 @@ async function validateReleaseManifestEvidence(
     windows,
     "release manifest.windowsEvidence",
   );
-  const windowsPath = resolve(
-    input.repositoryRoot,
-    ...windowsReference.path.split("/"),
+  const releasePrefix = `artifacts/release/${input.version}/`;
+  const windowsPayload = windowsChecklistPayload(
+    await readManifestEvidenceBytes(
+      input,
+      windowsReference,
+      "release manifest.windowsEvidence",
+      [releasePrefix, `artifacts/manual-acceptance/${input.version}/`],
+    ),
   );
-  const windowsPayload = windowsChecklistPayload(await readFile(windowsPath));
   const checklist = windowsPayload.checklist;
   validateCompleteWindowsChecklist(windowsPayload, windows, input);
   const productVersion = requireString(
@@ -4074,6 +4103,18 @@ async function validateReleaseManifestEvidence(
     throw new EvidenceValidationError(
       "EvidenceVersionMismatch",
       "Windows checklist does not bind the selected release version",
+    );
+  }
+  if (
+    requireString(
+      checklist,
+      "runnerProtocolVersion",
+      "WindowsChecklistEvidence",
+    ) !== REQUIRED_RUNNER_PROTOCOL_VERSION
+  ) {
+    throw new EvidenceValidationError(
+      "WindowsEvidenceProtocolInvalid",
+      `Windows checklist does not bind ${REQUIRED_RUNNER_PROTOCOL_VERSION}`,
     );
   }
 
@@ -4102,13 +4143,6 @@ async function validateReleaseManifestEvidence(
         ]
       : [];
   });
-  const releasePrefix = `artifacts/release/${input.version}/`;
-  await assertManifestPathConfined(
-    input,
-    windowsReference,
-    "release manifest.windowsEvidence",
-    [releasePrefix, `artifacts/manual-acceptance/${input.version}/`],
-  );
   await assertManifestPathConfined(
     input,
     sbomReference,
