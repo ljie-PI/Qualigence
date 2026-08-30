@@ -3377,9 +3377,12 @@ describe("finalizeGraphFreezeFromEvidence", () => {
     ["cross-section Windows checklist ids", "WindowsEvidenceItemInvalid"],
     ["missing Windows acceptance metadata", "WindowsEvidenceEnvironmentInvalid"],
     ["contradictory Windows build metadata", "WindowsEvidenceEnvironmentInvalid"],
+    ["administrator Windows account", "WindowsEvidenceEnvironmentInvalid"],
+    ["non-ISO Windows execution timestamp", "EvidenceStale"],
     ["duplicate Windows signer", "WindowsEvidenceSignerInvalid"],
     ["incompatible Runner protocol", "WindowsEvidenceProtocolInvalid"],
     ["cross-commit CI artifact", "GateArtifactCommitMismatch"],
+    ["non-ISO release manifest timestamp", "EvidenceStale"],
     ["invalid SBOM", "SbomSchemaInvalid"],
     ["mismatched provenance", "AttestationBundleHashMismatch"],
   ] as const)("fails closed for %s", async (scenario, expectedCode) => {
@@ -3412,6 +3415,8 @@ describe("finalizeGraphFreezeFromEvidence", () => {
       scenario === "cross-section Windows checklist ids" ||
       scenario === "missing Windows acceptance metadata" ||
       scenario === "contradictory Windows build metadata" ||
+      scenario === "administrator Windows account" ||
+      scenario === "non-ISO Windows execution timestamp" ||
       scenario === "duplicate Windows signer" ||
       scenario === "incompatible Runner protocol"
     ) {
@@ -3446,6 +3451,13 @@ describe("finalizeGraphFreezeFromEvidence", () => {
           checklist["acceptanceEnvironment"],
           "Windows acceptance metadata",
         )["windowsBuild"] = "Windows 11 22H2 22621";
+      } else if (scenario === "administrator Windows account") {
+        mutableRecord(
+          checklist["acceptanceEnvironment"],
+          "Windows acceptance metadata",
+        )["accountPrivilege"] = "administrator";
+      } else if (scenario === "non-ISO Windows execution timestamp") {
+        checklist["executedAt"] = "August 29, 2026";
       } else {
         const items = checklist["items"];
         if (!Array.isArray(items) || items[0] === undefined) {
@@ -3495,6 +3507,8 @@ describe("finalizeGraphFreezeFromEvidence", () => {
         throw new Error("release fixture has no Gate");
       }
       mutableRecord(gates[0], "release Gate")["commit"] = "f".repeat(40);
+    } else if (scenario === "non-ISO release manifest timestamp") {
+      manifest["generatedAt"] = "August 29, 2026";
     } else if (scenario === "invalid SBOM") {
       const sbomReference = mutableRecord(manifest["sbom"], "release SBOM");
       const sbomPath = join(

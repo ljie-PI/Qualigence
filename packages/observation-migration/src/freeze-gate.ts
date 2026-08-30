@@ -4045,6 +4045,12 @@ function validateCompleteWindowsChecklist(
       );
     }
   }
+  if (acceptanceEnvironment["accountPrivilege"] !== "standard-user") {
+    throw new EvidenceValidationError(
+      "WindowsEvidenceEnvironmentInvalid",
+      "Windows checklist acceptance metadata must use a standard-user account",
+    );
+  }
   const sessionTypes = assertStringArray(
     acceptanceEnvironment["interactiveSessionTypes"],
     "WindowsChecklistEvidence.acceptanceEnvironment.interactiveSessionTypes",
@@ -4212,7 +4218,10 @@ function validateCompleteWindowsChecklist(
     "executedAt",
     "WindowsChecklistEvidence",
   );
-  if (Date.parse(executedAt) > Date.parse(input.decidedAt)) {
+  if (
+    timestampMillis(executedAt, "WindowsChecklistEvidence.executedAt") >
+    timestampMillis(input.decidedAt, "decidedAt")
+  ) {
     throw new EvidenceValidationError(
       "EvidenceStale",
       "Windows checklist was executed after the decision timestamp",
@@ -4565,8 +4574,8 @@ async function validateReleaseManifestEvidence(
     "release manifest",
   );
   if (
-    !Number.isFinite(Date.parse(generatedAt)) ||
-    Date.parse(generatedAt) > Date.parse(input.decidedAt)
+    timestampMillis(generatedAt, "release manifest.generatedAt") >
+    timestampMillis(input.decidedAt, "decidedAt")
   ) {
     throw new EvidenceValidationError(
       "EvidenceStale",
