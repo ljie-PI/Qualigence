@@ -215,6 +215,32 @@ describe("decideGraphFreeze", () => {
     expect(decision.inputs.windowsChecklistValid).toBe(false);
   });
 
+  it("stays candidate when checklist item ids are swapped across sections", () => {
+    const items = passingVetoItems();
+    const firstIndex = items.findIndex((item) => item.section === "3");
+    const secondIndex = items.findIndex((item) => item.section === "4");
+    const first = items[firstIndex];
+    const second = items[secondIndex];
+    if (first === undefined || second === undefined) {
+      throw new Error("checklist fixture is missing sections 3 or 4");
+    }
+    items[firstIndex] = { ...first, id: second.id };
+    items[secondIndex] = { ...second, id: first.id };
+
+    const decision = decideGraphFreeze(
+      cleanCandidateReport(),
+      validWindowsChecklistEvidence({ items }),
+      validSchemaConformanceEvidence(),
+      NOW,
+    );
+
+    expect(decision.status).toBe("candidate");
+    expect(decision.inputs.windowsChecklistValid).toBe(false);
+    expect(decision.blockingReasons).toContain(
+      `checklist item ${second.id} does not belong to section ${first.section}`,
+    );
+  });
+
   it("stays candidate when the checklist is signed with the wrong version", () => {
     const decision = decideGraphFreeze(
       cleanCandidateReport(),

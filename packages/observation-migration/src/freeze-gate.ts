@@ -4858,6 +4858,31 @@ async function reconcileProviderBenchmarkIdentity(
   }
 }
 
+type DecisionTemporaryRemover = (temporaryPath: string) => Promise<void>;
+
+let decisionTemporaryRemoverForTests: DecisionTemporaryRemover | undefined;
+
+export function setDecisionTemporaryRemoverForTests(
+  remover: DecisionTemporaryRemover,
+): () => void {
+  if (process.env["NODE_ENV"] !== "test" || process.env["VITEST"] !== "true") {
+    throw new GraphFreezeFinalizationError(
+      "FinalizerInputInvalid",
+      "the decision-temporary cleanup test seam is available only inside Vitest",
+    );
+  }
+  if (decisionTemporaryRemoverForTests !== undefined) {
+    throw new GraphFreezeFinalizationError(
+      "FinalizerInputInvalid",
+      "the decision-temporary cleanup test seam is already active",
+    );
+  }
+  decisionTemporaryRemoverForTests = remover;
+  return () => {
+    decisionTemporaryRemoverForTests = undefined;
+  };
+}
+
 async function publishDecision(
   repositoryRoot: string,
   path: string,
@@ -4865,6 +4890,7 @@ async function publishDecision(
   signal: AbortSignal | undefined,
 ): Promise<void> {
   const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
+  let primaryError: GraphFreezeFinalizationError | undefined;
   try {
     await assertDecisionOutputPath(repositoryRoot, path);
     await mkdir(dirname(path), { recursive: true });
@@ -4908,27 +4934,43 @@ async function publishDecision(
       );
     }
   } catch (error) {
-    if (error instanceof GraphFreezeFinalizationError) {
-      throw error;
-    }
-    throw new GraphFreezeFinalizationError(
-      "DecisionArtifactWriteFailed",
-      `could not atomically publish ${path}: ${errorMessage(error)}`,
-    );
+    primaryError =
+      error instanceof GraphFreezeFinalizationError
+        ? error
+        : new GraphFreezeFinalizationError(
+            "DecisionArtifactWriteFailed",
+            `could not atomically publish ${path}: ${errorMessage(error)}`,
+          );
+    throw primaryError;
   } finally {
     try {
-      await rm(temporary, { force: true });
-    } catch (error) {
+      const remover = decisionTemporaryRemoverForTests;
+      if (remover === undefined) {
+        await rm(temporary, { force: true });
+      } else {
+        await remover(temporary);
+      }
+    } catch (cleanupError) {
+      if (primaryError !== undefined) {
+        const prefix = `${primaryError.code}: `;
+        const primaryMessage = primaryError.message.startsWith(prefix)
+          ? primaryError.message.slice(prefix.length)
+          : primaryError.message;
+        throw new GraphFreezeFinalizationError(
+          primaryError.code,
+          `${primaryMessage}; temporary cleanup also failed: ${errorMessage(cleanupError)}`,
+        );
+      }
       try {
         await assertDecisionOutputPath(repositoryRoot, path);
         const published = await readFile(path, "utf8");
         if (published !== bytes) {
-          throw error;
+          throw cleanupError;
         }
       } catch {
         throw new GraphFreezeFinalizationError(
           "DecisionArtifactWriteFailed",
-          `could not clean terminal temporary state for ${path}: ${errorMessage(error)}`,
+          `could not clean terminal temporary state for ${path}: ${errorMessage(cleanupError)}`,
         );
       }
     }

@@ -16,6 +16,7 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { canonicalJson, sha256Hex } from "@qualigence/skill";
 import {
+  setDecisionTemporaryRemoverForTests,
   setReleaseVerifierRunnerForTests,
   setReleaseVerifierSnapshotRemoverForTests,
 } from "../../../packages/observation-migration/dist/freeze-gate.js";
@@ -3558,6 +3559,48 @@ describe("finalizeGraphFreezeFromEvidence", () => {
     ).rejects.toMatchObject({ code: "ENOENT" });
     await expect(stat(releaseRoot)).resolves.toBeDefined();
     expect(await readdir(releaseRoot)).toEqual([]);
+  });
+
+  it("preserves post-write cancellation when temporary cleanup also fails", async () => {
+    const repositoryRoot = await mkdtemp(
+      join(tmpdir(), "qualigence-freeze-cancel-cleanup-"),
+    );
+    fixtureRoots.push(repositoryRoot);
+    const controller = new AbortController();
+    let reads = 0;
+    Object.defineProperty(controller.signal, "aborted", {
+      get: () => {
+        reads += 1;
+        return reads >= 3;
+      },
+    });
+    const restore = setDecisionTemporaryRemoverForTests(async () => {
+      throw new Error("fixture temporary cleanup failure");
+    });
+
+    try {
+      await expect(
+        finalizeGraphFreezeFromEvidence(
+          finalizerInput(repositoryRoot, { signal: controller.signal }),
+        ),
+      ).rejects.toMatchObject({
+        code: "FinalizationAborted",
+        message: expect.stringContaining("temporary cleanup also failed"),
+      });
+    } finally {
+      restore();
+    }
+    await expect(
+      readFile(
+        join(
+          repositoryRoot,
+          "artifacts",
+          "release",
+          "v0.1.0-candidate",
+          "graph-freeze-decision.json",
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("reconciles identical replay and concurrent writers without rewriting", async () => {

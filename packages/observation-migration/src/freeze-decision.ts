@@ -382,6 +382,12 @@ function validateWindowsChecklist(
       reasons.push(`checklist item ${item.id} is duplicated`);
       ok = false;
     }
+    if (item.id.split(".", 1)[0] !== item.section) {
+      reasons.push(
+        `checklist item ${item.id} does not belong to section ${item.section}`,
+      );
+      ok = false;
+    }
     byId.set(item.id, item);
     sectionCounts.set(item.section, (sectionCounts.get(item.section) ?? 0) + 1);
     if (item.result === "fail" || item.result === "not_run") {
