@@ -34,27 +34,27 @@ artifacts/manual-acceptance/<product-version>/<date>-windows-m3.md
 
 ## 2. 验收信息
 
-| 字段 | 记录 |
-|---|---|
-| Qualigence Product Version | |
-| Runner Version | |
-| Companion Version | |
-| Runner Protocol Version | |
-| Observation Schema Epoch/Version | |
-| Skill Compiler Version | |
-| Windows Edition | |
-| Windows Build | |
-| CPU Architecture | |
-| 显示分辨率 | |
-| DPI/缩放 | |
-| 系统语言 | |
-| 测试账号 | |
-| 交互会话类型（本地/RDP） | |
-| Runner certificate fingerprint | |
-| Companion pipe / logon SID | |
-| Model Provider/Profile | |
-| 执行人 | |
-| 执行日期 | |
+| 字段                             | 记录 |
+| -------------------------------- | ---- |
+| Qualigence Product Version       |      |
+| Runner Version                   |      |
+| Companion Version                |      |
+| Runner Protocol Version          |      |
+| Observation Schema Epoch/Version |      |
+| Skill Compiler Version           |      |
+| Windows Edition                  |      |
+| Windows Build                    |      |
+| CPU Architecture                 |      |
+| 显示分辨率                       |      |
+| DPI/缩放                         |      |
+| 系统语言                         |      |
+| 测试账号                         |      |
+| 交互会话类型（本地/RDP）         |      |
+| Runner certificate fingerprint   |      |
+| Companion pipe / logon SID       |      |
+| Model Provider/Profile           |      |
+| 执行人                           |      |
+| 执行日期                         |      |
 
 ## 3. 环境前置条件
 
@@ -254,13 +254,13 @@ artifacts/manual-acceptance/<product-version>/<date>-windows-m3.md
 
 ## 17. 验收结论
 
-| 统计 | 数量 |
-|---|---:|
-| 通过 | |
-| 失败 | |
-| 不适用 | |
-| 未执行 | |
-| 发布阻塞项 | |
+| 统计       | 数量 |
+| ---------- | ---: |
+| 通过       |      |
+| 失败       |      |
+| 不适用     |      |
+| 未执行     |      |
+| 发布阻塞项 |      |
 
 结论：
 
@@ -270,14 +270,14 @@ artifacts/manual-acceptance/<product-version>/<date>-windows-m3.md
 
 签字：
 
-| 角色 | 姓名 | 日期 |
-|---|---|---|
-| 执行人 | | |
-| 复核人 | | |
+| 角色   | 姓名 | 日期 |
+| ------ | ---- | ---- |
+| 执行人 |      |      |
+| 复核人 |      |      |
 
 ## 18. Freeze 证据映射（机器可读 `WindowsChecklistEvidence`）
 
-本节把上面的人工验收结果桥接到 Observation Graph v1 的 freeze 决策。仅当人工在**真实 Windows 11 硬件**上完成本清单并签字后，操作者/复核人才据此填写一份结构化 `WindowsChecklistEvidence` 记录，交给 `decideGraphFreeze()`（见 `packages/observation-migration/src/freeze-decision.ts`）。**任何自动化测试都不会生成这份证据**；没有它，freeze 决策永远为 `candidate`。
+本节把上面的人工验收结果桥接到 Observation Graph v1 的 freeze 决策。仅当人工在**真实 Windows 11 硬件**上完成本清单并签字后，操作者/复核人才据此填写一份结构化 `WindowsChecklistEvidence` 记录，由 integrated Ticket 48 写入版本化 evidence 路径并绑定到 Ticket 34 release manifest。生产自动化不会生成或替代这份人工签署证据；没有它，freeze 决策永远为 `candidate`。
 
 ### 18.1 记录版本与元数据
 
@@ -289,21 +289,21 @@ artifacts/manual-acceptance/<product-version>/<date>-windows-m3.md
 
 第 16 节的每一条安全否决项对应一个稳定 id；`decideGraphFreeze` 要求这些 id 全部以 `result: "pass"` 出现在 `items[]` 中，且 `securityVetoItemIds` 必须完整声明它们（常量 `REQUIRED_SECURITY_VETO_ITEM_IDS`）。任意一条缺失或非 `pass`（`fail`/`not_run`/`not_applicable`）都会阻塞 freeze。
 
-| 第 16 节条目 | `WindowsChecklistItemEvidence.id` |
-|---|---|
-| 无/错绑定/已消费/过期 Permit 均未执行动作 | `16.permit-binding-enforced` |
-| 高风险（ExternalSideEffect/Destructive/ProductionForbidden）均需授权 | `16.high-risk-authorization-required` |
-| 紧急停止阻止后续新动作 | `16.emergency-stop-blocks-new-actions` |
-| 密钥/Token/证据明文未出现在普通日志 | `16.no-secret-plaintext-logs` |
-| Runner 无法绕过本地 Companion 审批 | `16.no-companion-bypass-approval` |
-| TypeScript 无法直接执行 UIA 或管理目标 PID | `16.no-direct-uia-or-pid-management` |
-| Named Pipe 身份/DACL 强制 | `16.named-pipe-identity-enforced` |
-| UIA hang 未拖死 Companion | `16.uia-hang-does-not-kill-companion` |
-| shutdown/reset 未误杀 Job 外同名/PID-reuse 进程 | `16.no-out-of-job-name-or-pid-kill` |
-| Trace 完整性冲突未被静默忽略 | `16.trace-integrity-conflicts-rejected` |
-| 未签名 Skill 未被执行 | `16.unsigned-skill-not-executed` |
-| 高置信崩溃/数据损坏信号未被屏蔽 | `16.crash-signals-not-suppressed` |
-| 无法确定的外部副作用未被自动重放 | `16.unknown-side-effect-not-replayed` |
+| 第 16 节条目                                                         | `WindowsChecklistItemEvidence.id`       |
+| -------------------------------------------------------------------- | --------------------------------------- |
+| 无/错绑定/已消费/过期 Permit 均未执行动作                            | `16.permit-binding-enforced`            |
+| 高风险（ExternalSideEffect/Destructive/ProductionForbidden）均需授权 | `16.high-risk-authorization-required`   |
+| 紧急停止阻止后续新动作                                               | `16.emergency-stop-blocks-new-actions`  |
+| 密钥/Token/证据明文未出现在普通日志                                  | `16.no-secret-plaintext-logs`           |
+| Runner 无法绕过本地 Companion 审批                                   | `16.no-companion-bypass-approval`       |
+| TypeScript 无法直接执行 UIA 或管理目标 PID                           | `16.no-direct-uia-or-pid-management`    |
+| Named Pipe 身份/DACL 强制                                            | `16.named-pipe-identity-enforced`       |
+| UIA hang 未拖死 Companion                                            | `16.uia-hang-does-not-kill-companion`   |
+| shutdown/reset 未误杀 Job 外同名/PID-reuse 进程                      | `16.no-out-of-job-name-or-pid-kill`     |
+| Trace 完整性冲突未被静默忽略                                         | `16.trace-integrity-conflicts-rejected` |
+| 未签名 Skill 未被执行                                                | `16.unsigned-skill-not-executed`        |
+| 高置信崩溃/数据损坏信号未被屏蔽                                      | `16.crash-signals-not-suppressed`       |
+| 无法确定的外部副作用未被自动重放                                     | `16.unknown-side-effect-not-replayed`   |
 
 每个 `items[]` 元素形如：
 
@@ -312,8 +312,8 @@ artifacts/manual-acceptance/<product-version>/<date>-windows-m3.md
   "section": "16",
   "id": "16.emergency-stop-blocks-new-actions",
   "description": "紧急停止阻止后续新动作",
-  "result": "pass",          // pass | fail | not_applicable | not_run
-  "note": "Run <run-id> / 截图 <artifact-ref>"
+  "result": "pass", // pass | fail | not_applicable | not_run
+  "note": "Run <run-id> / 截图 <artifact-ref>",
 }
 ```
 
@@ -327,12 +327,21 @@ freeze 还要求确认 **Web（PR-02/M1）与 Desktop（本 PR 的 Reference App
 
 Desktop 侧的这一证据由本 PR 的 `tests/component/windows-uia/*.test.ts`（Linux 可跑）持续证明；Web 侧由 M1 的既有一致性测试证明。
 
-### 18.4 `FreezeDecision` 期望形状
+### 18.4 `graph-freeze-decision.json` 期望形状
 
-`decideGraphFreeze(candidateReport, windowsChecklistEvidence, schemaConformanceEvidence)` 返回 `FreezeDecision`：
+Ticket 48 调用
+`finalizeGraphFreezeFromEvidence(...)`，最终原子写入
+`artifacts/release/<productVersion>/graph-freeze-decision.json`：
 
-- `status: "frozen"` **当且仅当**三项输入齐备且有效（候选 Freeze Report 零无法解释的迁移失败、完整通过的安全否决项、跨目标 schema 一致）。
+- `status: "frozen"` **当且仅当**GitHub closure、候选迁移、Web/Desktop
+  conformance、native reports、real provider、Reference Model benchmark 和
+  Ticket 34 release manifest 的 CI/Windows/SBOM/provenance 全部有效。
 - 否则 `status: "candidate"`，`blockingReasons[]` 精确列出缺失/失败原因。
 - `signoff` 仅在 `frozen` 时出现，回显 `operatorName`/`reviewerName`/`executedAt`/`checklistVersion`/`productVersion`/`windowsBuild`。
+- 每个 capability 记录 production wiring、验证命令、commit，以及已接受
+  evidence 的版本化路径与 SHA-256。
 
-> 在本仓库的自动化环境中不存在真实的已签署 Windows 证据，因此 `generateAutomatedFreezeGateReport()` 永远且诚实地报告 `candidate`。只有人工完成本清单并把真实 `WindowsChecklistEvidence` 传入 `decideGraphFreeze` 后，v1 才可能进入 `frozen`。
+`decideGraphFreeze(...)` 仍保留为兼容的纯三输入辅助接口；它不替代上述
+serialized finalizer。当前仓库不存在真实已签署 Windows 证据，因此公开状态
+仍为 `candidate`。只有 integrated Ticket 48 完成人工验收并把真实 evidence
+交给 merged finalizer 后，v1 才可能进入 `frozen`。

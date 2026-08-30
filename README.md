@@ -1,4 +1,5 @@
 # Qualigence
+
 AI-native Software Quality Intelligence
 
 ## Architecture And Tracked Work
@@ -64,13 +65,13 @@ Secret 处理：任何 API Key、私钥、口令等 Secret 绝不写入 `config.
 
 ## 测试与发布 Gate
 
-| 命令 | 作用 |
-|---|---|
-| `pnpm build` | 增量 TypeScript 构建（`tsc -b`） |
-| `pnpm test` | 构建后运行全部默认 Vitest 套件（含 E2E；不含 Live Smoke） |
-| `pnpm test:e2e` | 只运行 `tests/e2e` 的 CLI 黑盒场景（normal/fault/blocked/401） |
-| `pnpm typecheck` | 对测试工程做 `tsc --noEmit` |
-| `pnpm smoke:node-imports` | 校验公开包的 Node 导入 |
+| 命令                      | 作用                                                           |
+| ------------------------- | -------------------------------------------------------------- |
+| `pnpm build`              | 增量 TypeScript 构建（`tsc -b`）                               |
+| `pnpm test`               | 构建后运行全部默认 Vitest 套件（含 E2E；不含 Live Smoke）      |
+| `pnpm test:e2e`           | 只运行 `tests/e2e` 的 CLI 黑盒场景（normal/fault/blocked/401） |
+| `pnpm typecheck`          | 对测试工程做 `tsc --noEmit`                                    |
+| `pnpm smoke:node-imports` | 校验公开包的 Node 导入                                         |
 
 E2E 用确定性本地 Fixture 与本地 OpenAI-compatible 模拟 Endpoint（Fastify，绑定 `127.0.0.1`
 随机端口），普通 CI 不需要真实 API Key，也不访问公网。
@@ -130,6 +131,22 @@ wrong repository/commit, duplicate or missing Gate names, cross-commit Gate
 artifacts, mismatched SBOM or Windows-evidence hashes, and unsigned Windows
 evidence. Integrated Ticket 48 owns all human, provider, publication, and final
 freeze evidence; missing evidence is a blocked release, never a synthetic pass.
+
+`@qualigence/observation-migration` exposes
+`finalizeGraphFreezeFromEvidence(...)` for the terminal Graph v1 decision. The
+finalizer accepts only repository-relative, version-confined evidence paths with
+caller-pinned SHA-256 values, validates the serialized GitHub closure, migration,
+Web/Desktop conformance, native Windows, real-provider, Reference Model benchmark,
+and Ticket 34 release records, then atomically writes
+`artifacts/release/<version>/graph-freeze-decision.json`. Each capability records
+its production wiring, verification command, selected commit, accepted evidence,
+and exact blockers.
+
+The public Graph lifecycle remains **candidate**. Missing or invalid integrated
+Ticket 48 evidence deterministically produces a candidate decision without
+`signoff`; only a complete valid real evidence set can produce `frozen`. Fixture
+tests prove that code path without creating release evidence or claiming a real
+freeze.
 
 ### Live Smoke（显式 opt-in，不在普通 Gate）
 

@@ -5,8 +5,9 @@ frozen until Tickets 22-35 produce the Graph migration, Desktop, native Windows,
 CI, release, and deterministic finalizer implementation, and integrated Ticket
 48 validates the real Windows, provider, publication, and final release evidence.
 Current migration tooling emits only `status: "candidate"` and
-`gate.frozen: false`; Ticket 35 owns the deterministic finalizer implementation,
-while Ticket 48 alone invokes it for the final human-approved transition.
+`gate.frozen: false`. Ticket 35 provides the deterministic serialized-evidence
+finalizer; Ticket 48 alone selects the release version, supplies real evidence,
+and invokes it for the final human-approved transition.
 
 ## Candidate Baseline
 
@@ -45,32 +46,36 @@ lifecycle move from `candidate` to `frozen`. After freeze, the
 `observation-graph/v1` major is under a compatibility promise and platform
 targets must extend (via typed extensions) rather than modify the common core.
 
-## LS-13 wiring: how the checklist above is enforced in code
+## Deterministic finalizer wiring
 
-LS-13 (PR-27) delivered the auditable machinery that turns the boxes above into
-a pure, testable decision — but it deliberately does **not** flip the status.
-The `frozen` transition is only reachable through
-`decideGraphFreeze(candidateReport, windowsChecklistEvidence, schemaConformanceEvidence)`
-in `packages/observation-migration/src/freeze-decision.ts`, which returns
-`status: "frozen"` **only** when all three inputs are present and valid:
+`finalizeGraphFreezeFromEvidence(...)` is the terminal public interface in
+`@qualigence/observation-migration`. It reads immutable JSON bytes from
+`artifacts/manual-acceptance/<version>/` and
+`artifacts/release/<version>/`, recomputes every caller-pinned SHA-256, rejects
+path traversal and symlinks, and validates repository/version/commit/timestamp
+binding before any decision is published.
 
-1. **Candidate Freeze Report** (LS-12) with zero unexplained migration failures.
-2. **`WindowsChecklistEvidence`** — the signed result of a human running
-   `docs/testing/windows-m3-manual-checklist.md` on real Windows 11 hardware
-   (see that file's Section 18 for the exact record shape and the Section 16
-   security-veto item ids that must all be `pass`).
-3. **`SchemaConformanceEvidence`** — proof that both Web (PR-02/M1) and Desktop
-   (PR-27 Reference App tests) validate the SAME v1 schema on the shared core
-   fields (`role`, `name`, `value`, `state`, `relations`).
+The decision covers these capabilities:
 
-Any missing/invalid input yields `status: "candidate"` with `blockingReasons[]`.
+1. GitHub Issue #67 ticket/PR/review/check/commit closure.
+2. Candidate migration inventory and Freeze Report.
+3. Shared Web/Desktop Graph v1 and lossless `uia/v1` conformance.
+4. Ticket 29/30 native Windows reports.
+5. Real-provider smoke and Reference Model benchmark invocation evidence.
+6. Ticket 34 release manifest, exact mandatory CI archives, signed local/RDP
+   Windows checklist, SBOM, provenance, and attestations.
 
-> **This automated environment reports `candidate`, always.** No real signed
-> `WindowsChecklistEvidence` exists in this repository, so
-> `generateAutomatedFreezeGateReport()`
-> (`packages/observation-migration/src/freeze-gate.ts`) is structurally unable to
-> emit `frozen` — it has no parameter to inject Windows evidence. A dedicated
-> test asserts the generated artifact never contains `"status":"frozen"` (the
-> "cannot lie about being frozen" invariant). v1 becomes `frozen` only after
-> integrated Ticket 48 completes every real-environment check and invokes the
-> merged Ticket 35 finalizer with that immutable evidence.
+The finalizer reuses `scripts/verify-release-manifest.mjs`; it does not duplicate
+or weaken Ticket 34's release authority. It atomically creates exactly
+`artifacts/release/<version>/graph-freeze-decision.json`. Byte-identical replay is
+idempotent, conflicting replay never overwrites the terminal artifact, and
+cancellation or persistence failure cannot return success-shaped output.
+
+Any missing or invalid capability yields `status: "candidate"` with exact stable
+`blockingReasons[]` and no `signoff`. `signoff` is structurally present only when
+every capability is verified and the result is `frozen`.
+
+> **This repository still reports `candidate`.** Checked-in fixtures prove the
+> complete finalizer path but are not release evidence. Integrated Ticket 48 must
+> perform the real Windows/provider/publication work and invoke the merged
+> finalizer before v1 can become `frozen`.

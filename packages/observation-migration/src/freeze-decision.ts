@@ -2,7 +2,8 @@ import { OBSERVATION_GRAPH_V1_VERSION } from "@qualigence/observation-contracts"
 import type { ObservationFreezeReportV1 } from "./freeze-report.js";
 
 /** The version tag of the Freeze Decision record. */
-export const FREEZE_DECISION_VERSION = "observation-freeze-decision/v1" as const;
+export const FREEZE_DECISION_VERSION =
+  "observation-freeze-decision/v1" as const;
 
 /**
  * The version string a real signed manual Windows-11 acceptance run must carry.
@@ -139,6 +140,96 @@ export interface FreezeDecision {
   readonly signoff?: FreezeDecisionSignoff;
 }
 
+export const GRAPH_FREEZE_DECISION_VERSION =
+  "qualigence-graph-freeze-decision/v1" as const;
+
+export type GraphFreezeEvidenceId =
+  | "github-closure"
+  | "candidate-migration"
+  | "graph-conformance"
+  | "native-reports"
+  | "provider"
+  | "benchmark"
+  | "release-manifest";
+
+export interface GraphFreezeEvidenceReference {
+  readonly path: string;
+  readonly sha256: string;
+}
+
+export interface GraphFreezeEvidencePaths {
+  readonly githubClosure?: GraphFreezeEvidenceReference;
+  readonly candidateMigration?: GraphFreezeEvidenceReference;
+  readonly graphConformance?: GraphFreezeEvidenceReference;
+  readonly nativeReports?: GraphFreezeEvidenceReference;
+  readonly provider?: GraphFreezeEvidenceReference;
+  readonly benchmark?: GraphFreezeEvidenceReference;
+  readonly releaseManifest?: GraphFreezeEvidenceReference;
+}
+
+export type GraphFreezeCapabilityStatus = "verified" | "blocked";
+
+export interface GraphFreezeCapabilityDecision {
+  readonly id:
+    | GraphFreezeEvidenceId
+    | "windows-checklist"
+    | "required-ci"
+    | "sbom-provenance";
+  readonly component: string;
+  readonly productionWiring: string;
+  readonly verification: string;
+  readonly command: string;
+  readonly commit: string;
+  readonly status: GraphFreezeCapabilityStatus;
+  readonly evidence: readonly GraphFreezeEvidenceReference[];
+  readonly blockers: readonly string[];
+}
+
+export interface GraphFreezeDecisionV1 {
+  readonly schemaVersion: typeof GRAPH_FREEZE_DECISION_VERSION;
+  readonly repository: string;
+  readonly version: string;
+  readonly commit: string;
+  readonly decidedAt: string;
+  readonly graphSchemaVersion: typeof OBSERVATION_GRAPH_V1_VERSION;
+  readonly status: FreezeDecisionStatus;
+  readonly capabilities: readonly GraphFreezeCapabilityDecision[];
+  readonly blockingReasons: readonly string[];
+  readonly signoff?: FreezeDecisionSignoff;
+}
+
+export interface FinalizeGraphFreezeInput {
+  readonly repositoryRoot: string;
+  readonly repository: string;
+  readonly version: string;
+  readonly commit: string;
+  readonly decidedAt: string;
+  readonly evidence: GraphFreezeEvidencePaths;
+  readonly signal?: AbortSignal;
+}
+
+export interface GraphFreezeFinalizationResult {
+  readonly path: string;
+  readonly sha256: string;
+  readonly decision: GraphFreezeDecisionV1;
+}
+
+export type GraphFreezeFinalizationErrorCode =
+  | "FinalizerInputInvalid"
+  | "FinalizationAborted"
+  | "DecisionArtifactConflict"
+  | "DecisionArtifactWriteFailed";
+
+export class GraphFreezeFinalizationError extends Error {
+  constructor(
+    readonly code: GraphFreezeFinalizationErrorCode,
+    message: string,
+  ) {
+    super(`${code}: ${message}`);
+    this.name = "GraphFreezeFinalizationError";
+  }
+}
+
 function isNonEmpty(value: string | undefined): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
@@ -171,12 +262,17 @@ function validateCandidateReport(
     reasons.push("candidate Freeze Report has unclassified assets");
     ok = false;
   }
-  if (!report.gate.zeroUnexplainedFailures || report.unexplainedFailures.length > 0) {
+  if (
+    !report.gate.zeroUnexplainedFailures ||
+    report.unexplainedFailures.length > 0
+  ) {
     reasons.push("candidate Freeze Report has unexplained migration failures");
     ok = false;
   }
   if (report.counts.failed > 0) {
-    reasons.push(`candidate Freeze Report has ${report.counts.failed} failed asset(s)`);
+    reasons.push(
+      `candidate Freeze Report has ${report.counts.failed} failed asset(s)`,
+    );
     ok = false;
   }
   return ok;
@@ -212,8 +308,13 @@ function validateWindowsChecklist(
     reasons.push("Windows checklist has no valid execution timestamp");
     ok = false;
   }
-  if (!isNonEmpty(evidence.productVersion) || !isNonEmpty(evidence.windowsBuild)) {
-    reasons.push("Windows checklist is missing product/build environment fields");
+  if (
+    !isNonEmpty(evidence.productVersion) ||
+    !isNonEmpty(evidence.windowsBuild)
+  ) {
+    reasons.push(
+      "Windows checklist is missing product/build environment fields",
+    );
     ok = false;
   }
   if (evidence.items.length === 0) {
@@ -234,7 +335,9 @@ function validateWindowsChecklist(
       reasons.push(`security-veto item ${requiredId} has no recorded result`);
       ok = false;
     } else if (item.result !== "pass") {
-      reasons.push(`security-veto item ${requiredId} did not pass (${item.result})`);
+      reasons.push(
+        `security-veto item ${requiredId} did not pass (${item.result})`,
+      );
       ok = false;
     }
   }
@@ -276,7 +379,9 @@ function validateSchemaConformance(
   const present = new Set(evidence.sharedCoreFields);
   for (const field of REQUIRED_SHARED_CORE_FIELDS) {
     if (!present.has(field)) {
-      reasons.push(`shared core field "${field}" is not validated by both targets`);
+      reasons.push(
+        `shared core field "${field}" is not validated by both targets`,
+      );
       ok = false;
     }
   }
@@ -310,7 +415,10 @@ export function decideGraphFreeze(
   now: () => string = () => new Date().toISOString(),
 ): FreezeDecision {
   const blockingReasons: string[] = [];
-  const candidateReportValid = validateCandidateReport(candidateReport, blockingReasons);
+  const candidateReportValid = validateCandidateReport(
+    candidateReport,
+    blockingReasons,
+  );
   const windowsChecklistValid = validateWindowsChecklist(
     windowsChecklistEvidence,
     blockingReasons,

@@ -40,6 +40,8 @@ export {
   WINDOWS_M3_CHECKLIST_VERSION,
   REQUIRED_SECURITY_VETO_ITEM_IDS,
   REQUIRED_SHARED_CORE_FIELDS,
+  GRAPH_FREEZE_DECISION_VERSION,
+  GraphFreezeFinalizationError,
   decideGraphFreeze,
 } from "./freeze-decision.js";
 
@@ -52,12 +54,22 @@ export type {
   FreezeDecisionInputs,
   FreezeDecisionSignoff,
   FreezeDecision,
+  GraphFreezeEvidenceId,
+  GraphFreezeEvidenceReference,
+  GraphFreezeEvidencePaths,
+  GraphFreezeCapabilityStatus,
+  GraphFreezeCapabilityDecision,
+  GraphFreezeDecisionV1,
+  FinalizeGraphFreezeInput,
+  GraphFreezeFinalizationResult,
+  GraphFreezeFinalizationErrorCode,
 } from "./freeze-decision.js";
 
 export {
   OBSERVATION_FREEZE_GATE_REPORT_VERSION,
   buildFreezeGateReport,
   generateAutomatedFreezeGateReport,
+  finalizeGraphFreezeFromEvidence,
 } from "./freeze-gate.js";
 
 export type {
@@ -75,10 +87,7 @@ export type {
   ObservationMigrationRunnerOptions,
 } from "./migration-runner.js";
 
-export {
-  SkillRecompiler,
-  migrateRecordingToV1,
-} from "./skill-recompiler.js";
+export { SkillRecompiler, migrateRecordingToV1 } from "./skill-recompiler.js";
 
 export type {
   PreV1SkillReference,

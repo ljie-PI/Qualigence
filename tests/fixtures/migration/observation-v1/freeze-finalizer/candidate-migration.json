@@ -1,0 +1,54 @@
+{
+  "schemaVersion": "qualigence-observation-migration-evidence/v1",
+  "repository": "ljie-PI/Qualigence",
+  "version": "v0.1.0-candidate",
+  "commit": "aca8a487268ef6baab644ff47401efc85b1d1a26",
+  "generatedAt": "2026-08-30T07:00:00.000Z",
+  "evidenceClass": "real",
+  "report": {
+    "version": "observation-freeze-report/v1",
+    "generatedAt": "2026-08-30T07:00:00.000Z",
+    "graphSchemaVersion": "observation-graph/v1",
+    "migratorVersion": "observation-migrator/v1",
+    "status": "candidate",
+    "counts": {
+      "inventory": 2,
+      "migrated": 1,
+      "deprecated": 1,
+      "needsHuman": 0,
+      "failed": 0
+    },
+    "unexplainedFailures": [],
+    "results": [
+      {
+        "assetId": "trace-1",
+        "assetKind": "observation",
+        "sourceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "status": "migrated",
+        "outputRef": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "migratorVersion": "observation-migrator/v1",
+        "locatorSchemaVersion": "semantic-locator/v1"
+      },
+      {
+        "assetId": "skill-1",
+        "assetKind": "skill",
+        "sourceHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "status": "deprecated",
+        "reasonCode": "ReplayOracleDiverged",
+        "migratorVersion": "observation-migrator/v1+skill-compiler/v1",
+        "sourceTraceRefs": ["trace-1"],
+        "skillSourceHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "skillVersion": 1,
+        "skillAssetHash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "locatorSchemaVersion": "semantic-locator/v1",
+        "skillCompilerVersion": "skill-compiler/v1"
+      }
+    ],
+    "gate": {
+      "zeroUnexplainedFailures": true,
+      "allAssetsClassified": true,
+      "frozen": false,
+      "pendingEvidence": ["Ticket 48 real evidence"]
+    }
+  }
+}

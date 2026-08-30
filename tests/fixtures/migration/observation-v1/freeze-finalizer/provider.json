@@ -1,0 +1,32 @@
+{
+  "schemaVersion": "qualigence-provider-evidence/v1",
+  "repository": "ljie-PI/Qualigence",
+  "version": "v0.1.0-candidate",
+  "commit": "aca8a487268ef6baab644ff47401efc85b1d1a26",
+  "generatedAt": "2026-08-30T07:30:00.000Z",
+  "evidenceClass": "real",
+  "environment": {
+    "source": "ticket-48",
+    "redacted": true,
+    "credentialVariables": ["OPENAI_API_KEY"]
+  },
+  "provider": {
+    "id": "openai-compatible",
+    "model": "qualigence-reference-model"
+  },
+  "result": {
+    "status": "succeeded",
+    "terminal": true
+  },
+  "invocations": [
+    {
+      "invocationId": "provider-smoke-1",
+      "status": "succeeded",
+      "usageStatus": "known",
+      "inputTokens": 40,
+      "outputTokens": 12,
+      "totalTokens": 52,
+      "providerRequestId": "request-redacted-1"
+    }
+  ]
+}
