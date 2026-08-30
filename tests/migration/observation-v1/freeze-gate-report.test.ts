@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   mkdir,
@@ -10,7 +11,8 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   buildFreezeReport,
@@ -28,6 +30,7 @@ import {
 } from "@qualigence/observation-migration";
 
 const NOW = () => "2026-08-02T00:00:00.000Z";
+const execFileAsync = promisify(execFile);
 const fixtureRoots: string[] = [];
 const FINALIZER_FIXTURE_ROOT = join(
   process.cwd(),
@@ -86,6 +89,368 @@ const REMEDIATION_ISSUES = [
 const REMEDIATION_PARENTS = [
   2, 17, 3, 18, 18, 18, 18, 18, 18, 18, 21, 30,
 ] as const;
+const PULL_REQUESTS = new Map([
+  [
+    1,
+    [
+      69,
+      "3b1c7621a3869be226b43153c0ae0682a62425b7",
+      "c69ef0e54b75e9bc0745f38d69c3d3c00c562474",
+    ],
+  ],
+  [
+    2,
+    [
+      71,
+      "a18d5f2e2d91358ed2b4ade5487574aa82fc3ec5",
+      "17d9e875f6e4a12742ad9e69f28320839685c873",
+    ],
+  ],
+  [
+    3,
+    [
+      76,
+      "fe30bfc8add4a7db38e4a81bc7701d44e9bf4c15",
+      "454f96a055053e15dd24a9c85762bd83046c68e0",
+    ],
+  ],
+  [
+    4,
+    [
+      85,
+      "055473ec58e6680335ce3306f8f8fcdbb169e593",
+      "14bcf76cc686244775a127c86cfaa2b19e4ad4a2",
+    ],
+  ],
+  [
+    5,
+    [
+      92,
+      "549ef5112138b7e4fa384c03f97b193d11c5e867",
+      "6f330c96ab8082461f3f35c354e38d945154f61a",
+    ],
+  ],
+  [
+    6,
+    [
+      91,
+      "14a7f1688d9c0f347239197f9c2c49be20587f67",
+      "0334508d245981fb84f36e36368f9bbd08928062",
+    ],
+  ],
+  [
+    7,
+    [
+      102,
+      "968c0f051cda71a05e3b2defeede7238c67e070b",
+      "18f2bae1518fee740f028d0d63cd1de458fc9229",
+    ],
+  ],
+  [
+    8,
+    [
+      106,
+      "240d013f438fc1df4d7063839bbaddbff6a66246",
+      "88c4df17620fdc046b0082cc277b1e766e222559",
+    ],
+  ],
+  [
+    9,
+    [
+      109,
+      "8bb2b779a52e9467a316d61f717aa41256e57afb",
+      "5cdc7452b118b37354ead7643e0ba604a37161e2",
+    ],
+  ],
+  [
+    10,
+    [
+      111,
+      "a83aadf617b4bbe97cab14fd67012141e575f485",
+      "9f629afa7def3d6e9e43e21550ebbc326ac5a00f",
+    ],
+  ],
+  [
+    11,
+    [
+      115,
+      "5614f8b7199163e3c0d3576b8e23299584bfe840",
+      "bd5155e6bbe809e9af12b4b2cec00bd9d2be9e52",
+    ],
+  ],
+  [
+    12,
+    [
+      119,
+      "318fc37bc6f0e5aeb7432f295cbc56d0be0cc734",
+      "088a09753f765545e1982a7ee14758947085cff8",
+    ],
+  ],
+  [
+    13,
+    [
+      122,
+      "de6d9f10d821163c8d25bd92f457576053c149c8",
+      "8b9a3f84915b4b5a7a92c4eaa032463e3c3aad7f",
+    ],
+  ],
+  [
+    14,
+    [
+      125,
+      "e18de3ba6dce8209a66389e99e7337a89a42d67c",
+      "a71a06f39bad8fe51f72b95618ed680e1d3ee04e",
+    ],
+  ],
+  [
+    15,
+    [
+      128,
+      "609f3f16a137b519dc7b42f36a1d5a936b22815a",
+      "86f0bc7808b3c34b5f3e8a495d6220e6f7b67200",
+    ],
+  ],
+  [
+    16,
+    [
+      70,
+      "eb32d3d666ee98a38de0784eb527c28564e4dbd9",
+      "8c1c06f5f3bd10b0255d06a6b347e4d89a25d7fa",
+    ],
+  ],
+  [
+    17,
+    [
+      72,
+      "87b8d5a1ba8bacb15ee70b9cf7d4daf932a962e9",
+      "9df95b17a25e206b20a4f964694e42ebf18906c8",
+    ],
+  ],
+  [
+    18,
+    [
+      75,
+      "2db5167ac6298b835beaa9f2047c4bbe53931c8a",
+      "de2b77369801785696b57b5dfacfd230bc0ea3d3",
+    ],
+  ],
+  [
+    19,
+    [
+      86,
+      "79fce12f4614f56754bf0babf6ceab0dbadac118",
+      "4ec4ebd5df46dc8ba2f658dd90065f20c9daf130",
+    ],
+  ],
+  [
+    20,
+    [
+      99,
+      "a33bef37fec00ff6db3a18a4c602191f8e012350",
+      "1995a946d297c86d67ed355be4c07fbe09c7f7ac",
+    ],
+  ],
+  [
+    21,
+    [
+      101,
+      "64f749ec144dce3f4114946d25517c1096be43d2",
+      "219532953a4eb0601b8471a8e510508dbd2c8647",
+    ],
+  ],
+  [
+    22,
+    [
+      90,
+      "7ec3ab1ca030913f390177f7d5f8b308981e00ef",
+      "7ef31db708612ddc5c020e6e2bb2758d763fba85",
+    ],
+  ],
+  [
+    23,
+    [
+      97,
+      "78a4de5d690375e037b78d41232c40bdb6f053e9",
+      "b7d087526be47c86950ae0ff1714f68043445a6d",
+    ],
+  ],
+  [
+    24,
+    [
+      107,
+      "57d38ea0fbd9eb232d1a2d97e57a9a8451b43619",
+      "6e8e4bdad38b934ab9f414305bb4c944a8942fd8",
+    ],
+  ],
+  [
+    25,
+    [
+      110,
+      "8216f8f1029dbb3700d37673c2a3383580ec1b19",
+      "05e05ebd762a9222b5fc031503c29612424d0105",
+    ],
+  ],
+  [
+    26,
+    [
+      112,
+      "7c7886fb089531b4159e9288e7f2b7f1e87c43a8",
+      "cff217f68f0b3bcaffe517aaed11e3e302abb964",
+    ],
+  ],
+  [
+    27,
+    [
+      116,
+      "588d349f159a1369b888207b8a79141f1c2fed93",
+      "34aeb423ef655ca04f8c69736e0a4d8b1ac9621e",
+    ],
+  ],
+  [
+    28,
+    [
+      118,
+      "76a109f8703d884310043f02f58c10b63d743c0b",
+      "5f6ee13e8cb9bfcd8e0f401e9d3bccd3a1782199",
+    ],
+  ],
+  [
+    29,
+    [
+      120,
+      "371e6d3e65c2ee334c5493cbf2fc8b9135129f64",
+      "6a0a0adc0ae35359e137d89163b72bca38c65a51",
+    ],
+  ],
+  [
+    30,
+    [
+      123,
+      "ebf933b9f45e85841cd2b602d410367dd8664395",
+      "9156a7be33f0349cf9c6e3b65167bb6cc92e1ec1",
+    ],
+  ],
+  [
+    32,
+    [
+      131,
+      "bbdf0e380c7feab5111aa6ecd0db4d8ffefa8236",
+      "c22c4650ffd7319e15ac27647859697d548989f4",
+    ],
+  ],
+  [
+    33,
+    [
+      132,
+      "5e26149b426101a2c3dc5c85fd71afb3beb404a3",
+      "d85438e87cefd9be12d93875c1d748c173be5e9d",
+    ],
+  ],
+  [
+    34,
+    [
+      133,
+      "8d90bf088a66d03dc1e7c1a1edfb518fd8969584",
+      "d66590a2d7fc4de759f3718469333fe1658d36e3",
+    ],
+  ],
+  [
+    35,
+    [
+      130,
+      "bc3b10546f2195588a771cbee7cf52ae4b8d65c4",
+      "bb4d11b95098ce6bd604d3bc02d13f0fd798c334",
+    ],
+  ],
+  [
+    36,
+    [
+      74,
+      "707a672e27ba23d825c95a735f803af78387e4b5",
+      "d03179e8b6662a359485b4a1a71cec114eb173fc",
+    ],
+  ],
+  [
+    37,
+    [
+      73,
+      "466742e08998fdbd61dadbd86e3fc493995b7588",
+      "87b8d5a1ba8bacb15ee70b9cf7d4daf932a962e9",
+    ],
+  ],
+  [
+    38,
+    [
+      77,
+      "b006e253b8b63fb59045f64606a3e9c95da34e35",
+      "fe30bfc8add4a7db38e4a81bc7701d44e9bf4c15",
+    ],
+  ],
+  [
+    39,
+    [
+      94,
+      "fcfb3fb64e696e819118f7c2a5269baee403f876",
+      "8fd56808dea9fc8b202e0d4833a0e8f5606e6001",
+    ],
+  ],
+  [
+    40,
+    [
+      108,
+      "18bd3e5a187410e674e67f8e851959bfd8b6aab7",
+      "3e46233f6acf7733b9b0f77c871b2994ba2c0d67",
+    ],
+  ],
+  [
+    41,
+    [
+      113,
+      "d56e8c98a93e602458a358c035f8a0ec33855480",
+      "184fb79de67cf821ffd8da8d0d2a86ba1ffae29e",
+    ],
+  ],
+  [
+    42,
+    [
+      114,
+      "a6db2f1ad6f9850b3e65ddb113decf5e23283fdf",
+      "6123350bbd47a0d196a26f25b0e24528561d627f",
+    ],
+  ],
+  [
+    43,
+    [
+      117,
+      "6fbc2c4d78dab248187bda30d8da8a709b7afd96",
+      "6579bbbaedb1f0cb1361701d4778081d5c7db73b",
+    ],
+  ],
+  [
+    44,
+    [
+      121,
+      "0805127eb1596736bb4c07e5a26fb6b94eedd3cc",
+      "7e48d64fd61e2f433dc9431b9308fb5700080dbb",
+    ],
+  ],
+  [
+    45,
+    [
+      126,
+      "4f45aaa9301940f106372deb38cd3b6ddeddd88c",
+      "5a5dfa00601d9a24f56b707350b0b5e3574a37ee",
+    ],
+  ],
+  [
+    47,
+    [
+      127,
+      "2a7a442e51b59ea57e11fc35811a5bb4c9e9daea",
+      "808fd0f639acafe2eb287456ea64a368db338219",
+    ],
+  ],
+] as const);
 const NESTED_EVIDENCE_FIXTURES: Readonly<Record<string, readonly string[]>> = {
   "graph-conformance.json": [
     "graph-web-report.json",
@@ -146,12 +511,14 @@ async function readFixtureObject(
   );
 }
 
-function gitSha(index: number): string {
-  return index.toString(16).padStart(40, "0");
-}
-
-function closurePullRequest(legacyTicket: number, pullRequestNumber: number) {
-  const head = gitSha(100 + legacyTicket);
+function closurePullRequest(legacyTicket: number) {
+  const pullRequest = PULL_REQUESTS.get(legacyTicket);
+  if (pullRequest === undefined) {
+    throw new Error(
+      `legacy Ticket ${legacyTicket} has no fixture pull request`,
+    );
+  }
+  const [pullRequestNumber, head, mergeCommit] = pullRequest;
   return {
     number: pullRequestNumber,
     url: `https://github.com/ljie-PI/Qualigence/pull/${pullRequestNumber}`,
@@ -159,7 +526,7 @@ function closurePullRequest(legacyTicket: number, pullRequestNumber: number) {
     mergedAt: "2026-08-29T00:00:00.000Z",
     reviewedHead: head,
     remoteHead: head,
-    mergeCommit: gitSha(200 + legacyTicket),
+    mergeCommit,
     changedFiles: ["packages/observation-migration/src/index.ts"],
     checkSuite: {
       status: "completed",
@@ -205,14 +572,9 @@ function githubClosureFixture() {
         todoCompleted: 4,
         blockedBy: CLOSURE_DEPENDENCIES[index],
       },
-      pullRequest: closurePullRequest(legacyTicket, 300 + legacyTicket),
+      pullRequest: closurePullRequest(legacyTicket),
     };
   });
-  const closurePullRequests = tickets.flatMap((item) =>
-    "pullRequest" in item && item.pullRequest !== undefined
-      ? [item.pullRequest]
-      : [],
-  );
   const remediation = REMEDIATION_ISSUES.map((issueNumber, index) => {
     const legacyTicket = index + 36;
     if (legacyTicket === 46) {
@@ -241,14 +603,9 @@ function githubClosureFixture() {
       classification: "resolved-remediation",
       parentLegacyTicket: REMEDIATION_PARENTS[index],
       blocking: false,
-      pullRequest: closurePullRequest(legacyTicket, 400 + legacyTicket),
+      pullRequest: closurePullRequest(legacyTicket),
     };
   });
-  const remediationPullRequests = remediation.flatMap((item) =>
-    "pullRequest" in item && item.pullRequest !== undefined
-      ? [item.pullRequest]
-      : [],
-  );
   return {
     schemaVersion: "qualigence-github-closure-evidence/v1",
     repository: "ljie-PI/Qualigence",
@@ -265,43 +622,12 @@ function githubClosureFixture() {
         number: 181,
         parentIssue: 67,
         state: "open",
-        status: "claimed",
+        status: "ready-for-human",
         blockedBy: [35],
       },
       authority: "integrated-human-acceptance",
       blocking: false,
     },
-    commitGraph: [
-      {
-        sha: FINALIZER_COMMIT,
-        parents: [
-          ...closurePullRequests.map((pullRequest) => pullRequest.mergeCommit),
-          ...remediationPullRequests.map(
-            (pullRequest) => pullRequest.mergeCommit,
-          ),
-        ],
-      },
-      ...closurePullRequests.flatMap((pullRequest) => [
-        {
-          sha: pullRequest.mergeCommit,
-          parents: [pullRequest.remoteHead],
-        },
-        {
-          sha: pullRequest.remoteHead,
-          parents: [],
-        },
-      ]),
-      ...remediationPullRequests.flatMap((pullRequest) => [
-        {
-          sha: pullRequest.mergeCommit,
-          parents: [pullRequest.remoteHead],
-        },
-        {
-          sha: pullRequest.remoteHead,
-          parents: [],
-        },
-      ]),
-    ],
   };
 }
 
@@ -398,6 +724,41 @@ function attestationBundle(
   )}\n`;
 }
 
+async function ensureGitObjectStore(repositoryRoot: string): Promise<void> {
+  const gitDirectory = join(repositoryRoot, ".git");
+  try {
+    await stat(gitDirectory);
+    return;
+  } catch (error) {
+    if (
+      typeof error !== "object" ||
+      error === null ||
+      !("code" in error) ||
+      error.code !== "ENOENT"
+    ) {
+      throw error;
+    }
+  }
+  await execFileAsync("git", ["init", "--quiet", repositoryRoot]);
+  const { stdout } = await execFileAsync(
+    "git",
+    ["rev-parse", "--git-common-dir"],
+    { cwd: process.cwd() },
+  );
+  const commonDirectory = stdout.trim();
+  const objectDirectory = join(
+    isAbsolute(commonDirectory)
+      ? commonDirectory
+      : resolve(process.cwd(), commonDirectory),
+    "objects",
+  );
+  await mkdir(join(gitDirectory, "objects", "info"), { recursive: true });
+  await writeFile(
+    join(gitDirectory, "objects", "info", "alternates"),
+    `${objectDirectory}\n`,
+  );
+}
+
 async function writeEvidenceObject(
   repositoryRoot: string,
   version: string,
@@ -406,6 +767,9 @@ async function writeEvidenceObject(
   copyDependencies = true,
   refreshDependencyHashes = copyDependencies,
 ) {
+  if (filename === "github-closure.json") {
+    await ensureGitObjectStore(repositoryRoot);
+  }
   const path = `artifacts/release/${version}/${filename}`;
   const materializedValue = structuredClone(value);
   await mkdir(join(repositoryRoot, "artifacts", "release", version), {
@@ -420,6 +784,7 @@ async function writeEvidenceObject(
       candidate.forEach((item) => refreshReferences(item, hashes));
       return;
     }
+
     if (candidate === null || typeof candidate !== "object") {
       return;
     }
@@ -1302,6 +1667,71 @@ describe("finalizeGraphFreezeFromEvidence", () => {
     );
   });
 
+  it("rejects a non-canonical PR identity even when its status is successful", async () => {
+    const repositoryRoot = await mkdtemp(
+      join(tmpdir(), "qualigence-freeze-github-pr-identity-"),
+    );
+    fixtureRoots.push(repositoryRoot);
+    const githubClosure = githubClosureFixture();
+    const ticketOne = mutableRecord(
+      githubClosure.tickets[0],
+      "legacy Ticket 01",
+    );
+    const pullRequest = mutableRecord(
+      ticketOne["pullRequest"],
+      "legacy Ticket 01 pull request",
+    );
+    pullRequest["number"] = 999;
+    pullRequest["url"] = "https://github.com/ljie-PI/Qualigence/pull/999";
+    const reference = await writeEvidenceObject(
+      repositoryRoot,
+      "v0.1.0-candidate",
+      "github-closure.json",
+      githubClosure,
+    );
+
+    const result = await finalizeGraphFreezeFromEvidence(
+      finalizerInput(repositoryRoot, {
+        evidence: { githubClosure: reference },
+      }),
+    );
+
+    expect(result.decision.blockingReasons).toContain(
+      "GithubPullRequestUnexpected: github-closure",
+    );
+  });
+
+  it("rejects a canonical PR whose merge commit is absent from local ancestry", async () => {
+    const repositoryRoot = await mkdtemp(
+      join(tmpdir(), "qualigence-freeze-github-local-ancestry-"),
+    );
+    fixtureRoots.push(repositoryRoot);
+    const githubClosure = githubClosureFixture();
+    const ticketOne = mutableRecord(
+      githubClosure.tickets[0],
+      "legacy Ticket 01",
+    );
+    mutableRecord(ticketOne["pullRequest"], "legacy Ticket 01 pull request")[
+      "mergeCommit"
+    ] = "f".repeat(40);
+    const reference = await writeEvidenceObject(
+      repositoryRoot,
+      "v0.1.0-candidate",
+      "github-closure.json",
+      githubClosure,
+    );
+
+    const result = await finalizeGraphFreezeFromEvidence(
+      finalizerInput(repositoryRoot, {
+        evidence: { githubClosure: reference },
+      }),
+    );
+
+    expect(result.decision.blockingReasons).toContain(
+      "GithubCommitNotAncestor: github-closure",
+    );
+  });
+
   it("rejects resolved remediation without merged PR evidence", async () => {
     const repositoryRoot = await mkdtemp(
       join(tmpdir(), "qualigence-freeze-github-remediation-pr-"),
@@ -1853,6 +2283,31 @@ describe("finalizeGraphFreezeFromEvidence", () => {
         mutableRecord(states[0], "benchmark scenario state")[
           "observationGraphSha256"
         ] = "f".repeat(64);
+      },
+    },
+    {
+      name: "malformed benchmark scenario binding",
+      key: "benchmark",
+      filename: "benchmark.json",
+      code: "BenchmarkRunnerBindingInvalid",
+      mutate: (evidence: Record<string, unknown>) => {
+        const runnerInputs = mutableRecord(
+          evidence["runnerInputs"],
+          "benchmark runner inputs",
+        );
+        const definitions = runnerInputs["scenarioDefinitions"];
+        if (!Array.isArray(definitions) || definitions[0] === undefined) {
+          throw new Error("benchmark fixture has no scenario definitions");
+        }
+        const states = mutableRecord(
+          definitions[0],
+          "benchmark scenario definition",
+        )["states"];
+        if (!Array.isArray(states) || states[0] === undefined) {
+          throw new Error("benchmark scenario definition has no states");
+        }
+        mutableRecord(states[0], "benchmark scenario state")["signals"] =
+          "not-an-array";
       },
     },
   ])("fails closed for $name", async ({ key, filename, code, mutate }) => {

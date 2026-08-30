@@ -1179,9 +1179,74 @@ const REQUIRED_REMEDIATION_PARENTS = [
   2, 17, 3, 18, 18, 18, 18, 18, 18, 18, 21, 30,
 ] as const;
 
+const REQUIRED_CLOSURE_PULL_REQUESTS = [
+  69,
+  71,
+  76,
+  85,
+  92,
+  91,
+  102,
+  106,
+  109,
+  111,
+  115,
+  119,
+  122,
+  125,
+  128,
+  70,
+  72,
+  75,
+  86,
+  99,
+  101,
+  90,
+  97,
+  107,
+  110,
+  112,
+  116,
+  118,
+  120,
+  123,
+  null,
+  131,
+  132,
+  133,
+  "ticket-35",
+] as const;
+
+const REQUIRED_REMEDIATION_PULL_REQUESTS = [
+  74,
+  73,
+  77,
+  94,
+  108,
+  113,
+  114,
+  117,
+  121,
+  126,
+  null,
+  127,
+] as const;
+
+const KNOWN_CLOSURE_PULL_REQUESTS = new Set<number>();
+for (const value of [
+  ...REQUIRED_CLOSURE_PULL_REQUESTS,
+  ...REQUIRED_REMEDIATION_PULL_REQUESTS,
+]) {
+  if (typeof value === "number") {
+    KNOWN_CLOSURE_PULL_REQUESTS.add(value);
+  }
+}
+
 const REQUIRED_PROVIDER_VARIABLES = [
   "QUALIGENCE_REFERENCE_MODEL_BASE_URL",
   "QUALIGENCE_REFERENCE_MODEL_API_KEY",
+  "QUALIGENCE_MODEL_BASE_URL",
+  "QUALIGENCE_MODEL_API_KEY",
   "QUALIGENCE_LIVE_MODEL_SMOKE",
   "QUALIGENCE_MODEL_NAME",
   "QUALIGENCE_DATA_DIR",
@@ -1249,6 +1314,65 @@ function commitAncestors(
   return visited;
 }
 
+async function repositoryCommitGraph(
+  repositoryRoot: string,
+  commit: string,
+  signal?: AbortSignal,
+): Promise<ReadonlyMap<string, readonly string[]>> {
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      ["-C", repositoryRoot, "rev-list", "--parents", commit],
+      { maxBuffer: 16 * 1024 * 1024, signal },
+    );
+    const graph = new Map<string, readonly string[]>();
+    for (const line of stdout.split(/\r?\n/u)) {
+      if (line === "") {
+        continue;
+      }
+      const [sha, ...parents] = line.split(" ");
+      if (sha !== undefined) {
+        graph.set(sha, parents);
+      }
+    }
+    if (!graph.has(commit)) {
+      throw new Error(`selected commit ${commit} is absent`);
+    }
+    return graph;
+  } catch (error) {
+    if (signal?.aborted === true) {
+      throw new GraphFreezeFinalizationError(
+        "FinalizationAborted",
+        "Graph freeze finalization was cancelled during ancestry validation",
+      );
+    }
+    throw new EvidenceValidationError(
+      "GithubCommitGraphIncomplete",
+      `local repository cannot prove selected commit ancestry: ${errorMessage(error)}`,
+    );
+  }
+}
+
+function assertCanonicalPullRequest(
+  ticket: number,
+  pullRequestNumber: number,
+): void {
+  const expected =
+    ticket <= 35
+      ? REQUIRED_CLOSURE_PULL_REQUESTS[ticket - 1]
+      : REQUIRED_REMEDIATION_PULL_REQUESTS[ticket - 36];
+  const valid =
+    expected === "ticket-35"
+      ? !KNOWN_CLOSURE_PULL_REQUESTS.has(pullRequestNumber)
+      : expected === pullRequestNumber;
+  if (!valid) {
+    throw new EvidenceValidationError(
+      "GithubPullRequestUnexpected",
+      `Ticket ${ticket} does not reference its canonical merged pull request`,
+    );
+  }
+}
+
 function validatePullRequest(
   value: unknown,
   ticket: number,
@@ -1283,6 +1407,7 @@ function validatePullRequest(
       `${label} number is missing or duplicated`,
     );
   }
+  assertCanonicalPullRequest(ticket, number);
   seenPullRequests.add(number);
   if (
     pullRequest["url"] !==
@@ -1395,10 +1520,10 @@ function validatePullRequest(
   }
 }
 
-function validateGithubClosureEvidence(
+async function validateGithubClosureEvidence(
   value: unknown,
   input: FinalizeGraphFreezeInput,
-): void {
+): Promise<void> {
   const evidence = asRecord(value, "GitHub closure evidence");
   assertKeys(
     evidence,
@@ -1413,7 +1538,6 @@ function validateGithubClosureEvidence(
       "tickets",
       "remediation",
       "integratedAcceptance",
-      "commitGraph",
     ],
     "GitHub closure evidence",
   );
@@ -1430,43 +1554,11 @@ function validateGithubClosureEvidence(
       "GitHub closure evidence must be rooted at Issue #67",
     );
   }
-  const graphEntries = requireArray(
-    evidence,
-    "commitGraph",
-    "GitHub closure evidence",
+  const graph = await repositoryCommitGraph(
+    input.repositoryRoot,
+    input.commit,
+    input.signal,
   );
-  const graph = new Map<string, readonly string[]>();
-  for (const [index, value] of graphEntries.entries()) {
-    const entry = asRecord(value, `GitHub commit graph entry ${index}`);
-    assertKeys(entry, ["sha", "parents"], `GitHub commit graph entry ${index}`);
-    const sha = requireCommit(
-      entry["sha"],
-      `GitHub commit graph entry ${index}.sha`,
-    );
-    if (graph.has(sha)) {
-      throw new EvidenceValidationError(
-        "GithubCommitDuplicate",
-        `commit graph contains duplicate ${sha}`,
-      );
-    }
-    const parents = requireArray(
-      entry,
-      "parents",
-      `GitHub commit graph entry ${index}`,
-    ).map((parent, parentIndex) =>
-      requireCommit(
-        parent,
-        `GitHub commit graph entry ${index}.parents[${parentIndex}]`,
-      ),
-    );
-    if (new Set(parents).size !== parents.length) {
-      throw new EvidenceValidationError(
-        "GithubCommitDuplicate",
-        `commit graph entry ${sha} contains duplicate parents`,
-      );
-    }
-    graph.set(sha, parents);
-  }
   const ancestors = commitAncestors(graph, input.commit);
   const tickets = requireArray(evidence, "tickets", "GitHub closure evidence");
   if (tickets.length !== REQUIRED_CLOSURE_ISSUES.length) {
@@ -1761,7 +1853,7 @@ function validateGithubClosureEvidence(
     integratedIssue["number"] !== 181 ||
     integratedIssue["parentIssue"] !== 67 ||
     integratedIssue["state"] !== "open" ||
-    integratedIssue["status"] !== "claimed" ||
+    integratedIssue["status"] !== "ready-for-human" ||
     integratedBlockedBy.length !== 1 ||
     integratedBlockedBy[0] !== 35 ||
     integratedAcceptance["authority"] !== "integrated-human-acceptance" ||
@@ -1769,7 +1861,7 @@ function validateGithubClosureEvidence(
   ) {
     throw new EvidenceValidationError(
       "GithubIntegratedAcceptanceInvalid",
-      "Ticket 48 must remain the claimed, non-substitutable final acceptance authority blocked by Ticket 35",
+      "Ticket 48 must remain the ready-for-human, non-substitutable final acceptance authority blocked by Ticket 35",
     );
   }
 }
@@ -2397,9 +2489,18 @@ function validateBenchmarkEvidence(
       canonicalJson(["navigate", "click", "input"]) ||
     !Array.isArray(policy["allowedOrigins"]) ||
     policy["allowedOrigins"].length === 0 ||
-    policy["allowedOrigins"].some(
-      (origin) => typeof origin !== "string" || origin.trim() === "",
-    ) ||
+    policy["allowedOrigins"].some((origin) => {
+      if (typeof origin !== "string" || origin.trim() === "") {
+        return true;
+      }
+      try {
+        return new URL(origin).origin !== origin;
+      } catch {
+        return true;
+      }
+    }) ||
+    new Set(policy["allowedOrigins"]).size !==
+      policy["allowedOrigins"].length ||
     policy["maximumSteps"] !== profile["maximumSteps"] ||
     policy["maximumWallClockMs"] !== profile["maximumWallClockMs"] ||
     policy["maximumModelTokens"] !== profile["maximumModelTokens"] ||
@@ -2447,6 +2548,75 @@ function validateBenchmarkEvidence(
       throw new EvidenceValidationError(
         "BenchmarkRunnerBindingInvalid",
         `benchmark scenario definition ${scenarioId} is missing, duplicated, or inconsistent`,
+      );
+    }
+    if (definition["seedUrl"] !== undefined) {
+      const seedUrl = asRecord(
+        definition["seedUrl"],
+        `benchmark scenario definition ${scenarioId}.seedUrl`,
+      );
+      assertKeys(
+        seedUrl,
+        ["origin", "pathname"],
+        `benchmark scenario definition ${scenarioId}.seedUrl`,
+      );
+      if (
+        typeof seedUrl["origin"] !== "string" ||
+        !policy["allowedOrigins"].includes(seedUrl["origin"]) ||
+        typeof seedUrl["pathname"] !== "string" ||
+        !seedUrl["pathname"].startsWith("/")
+      ) {
+        throw new EvidenceValidationError(
+          "BenchmarkRunnerBindingInvalid",
+          `benchmark scenario definition ${scenarioId} has an invalid seed URL binding`,
+        );
+      }
+    }
+    const stateIds = new Set<string>();
+    for (const [stateIndex, value] of states.entries()) {
+      const state = asRecord(
+        value,
+        `benchmark scenario definition ${scenarioId} state ${stateIndex}`,
+      );
+      assertKeys(
+        state,
+        ["id", "advanceNodeId", "signals", "observationGraphSha256"],
+        `benchmark scenario definition ${scenarioId} state ${stateIndex}`,
+      );
+      const stateId = requireString(
+        state,
+        "id",
+        `benchmark scenario definition ${scenarioId} state ${stateIndex}`,
+      );
+      if (
+        stateIds.has(stateId) ||
+        (state["advanceNodeId"] !== null &&
+          (typeof state["advanceNodeId"] !== "string" ||
+            state["advanceNodeId"].trim() === "")) ||
+        !Array.isArray(state["signals"]) ||
+        typeof state["observationGraphSha256"] !== "string" ||
+        !/^[a-f0-9]{64}$/u.test(state["observationGraphSha256"])
+      ) {
+        throw new EvidenceValidationError(
+          "BenchmarkRunnerBindingInvalid",
+          `benchmark scenario definition ${scenarioId} state ${stateId} is malformed`,
+        );
+      }
+      stateIds.add(stateId);
+    }
+    if (
+      states.some((value) => {
+        const advanceNodeId = (value as Record<string, unknown>)[
+          "advanceNodeId"
+        ];
+        return (
+          typeof advanceNodeId === "string" && !stateIds.has(advanceNodeId)
+        );
+      })
+    ) {
+      throw new EvidenceValidationError(
+        "BenchmarkRunnerBindingInvalid",
+        `benchmark scenario definition ${scenarioId} references an unknown advance node`,
       );
     }
     definitionsByScenario.set(scenarioId, definition);
@@ -3355,6 +3525,9 @@ async function evaluateReference(
       blockers: [],
     });
   } catch (error) {
+    if (error instanceof GraphFreezeFinalizationError) {
+      throw error;
+    }
     const code =
       error instanceof EvidenceValidationError
         ? error.code
