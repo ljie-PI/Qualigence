@@ -41,8 +41,8 @@ and invokes it for the final human-approved transition.
       report are versioned.
 - [ ] Human signoff on schema stability.
 
-Only when every box above is checked — in the LS-13 M3 Gate PR — may the graph
-lifecycle move from `candidate` to `frozen`. After freeze, the
+Only when every box above is checked may integrated Ticket 48 record the graph
+lifecycle transition from `candidate` to `frozen`. After freeze, the
 `observation-graph/v1` major is under a compatibility promise and platform
 targets must extend (via typed extensions) rather than modify the common core.
 
@@ -64,7 +64,8 @@ The decision covers these capabilities:
    conformance reports.
 4. Hash-linked Ticket 29/30 native Windows reports.
 5. Real-provider smoke and complete stdout/stderr/persisted-output redaction
-   reports, plus Reference Model attempt-to-invocation evidence.
+   reports that rehash the scanned bytes, plus Reference Model runner-input,
+   attempt-binding, and one-attempt-per-invocation evidence.
 6. Ticket 34 release manifest, exact mandatory CI archives, signed local/RDP
    Windows checklist, SBOM, provenance, and attestations.
 

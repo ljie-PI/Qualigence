@@ -440,11 +440,11 @@ async function assertNoSymlink(
   }
 }
 
-async function readEvidenceJson(
+async function readEvidenceBytes(
   input: FinalizeGraphFreezeInput,
   id: GraphFreezeEvidenceId,
   reference: GraphFreezeEvidenceReference,
-): Promise<unknown> {
+): Promise<Buffer> {
   if (
     !/^[a-f0-9]{64}$/u.test(reference.sha256) ||
     isAbsolute(reference.path) ||
@@ -510,6 +510,15 @@ async function readEvidenceJson(
       `${id} expected ${reference.sha256} but found ${actualHash}`,
     );
   }
+  return bytes;
+}
+
+async function readEvidenceJson(
+  input: FinalizeGraphFreezeInput,
+  id: GraphFreezeEvidenceId,
+  reference: GraphFreezeEvidenceReference,
+): Promise<unknown> {
+  const bytes = await readEvidenceBytes(input, id, reference);
   try {
     return JSON.parse(bytes.toString("utf8"));
   } catch (error) {
@@ -1166,6 +1175,10 @@ const REQUIRED_REMEDIATION_ISSUES = [
   162, 176, 172, 170, 177, 174, 173, 175, 178, 180, 179, 171,
 ] as const;
 
+const REQUIRED_REMEDIATION_PARENTS = [
+  2, 17, 3, 18, 18, 18, 18, 18, 18, 18, 21, 30,
+] as const;
+
 const REQUIRED_PROVIDER_VARIABLES = [
   "QUALIGENCE_REFERENCE_MODEL_BASE_URL",
   "QUALIGENCE_REFERENCE_MODEL_API_KEY",
@@ -1257,7 +1270,7 @@ function validatePullRequest(
       "remoteHead",
       "mergeCommit",
       "changedFiles",
-      "requiredChecks",
+      "checkSuite",
       "checks",
       "postReviewFiles",
     ],
@@ -1334,12 +1347,24 @@ function validatePullRequest(
     }
   }
   assertStringArray(pullRequest["changedFiles"], `${label}.changedFiles`);
-  const requiredChecks = assertStringArray(
-    pullRequest["requiredChecks"],
-    `${label}.requiredChecks`,
+  const checkSuite = asRecord(pullRequest["checkSuite"], `${label}.checkSuite`);
+  assertKeys(
+    checkSuite,
+    ["status", "conclusion", "checkCount"],
+    `${label}.checkSuite`,
+  );
+  const checkCount = requireSafeInteger(
+    checkSuite,
+    "checkCount",
+    `${label}.checkSuite`,
   );
   const checks = requireArray(pullRequest, "checks", label);
-  if (checks.length === 0) {
+  if (
+    checks.length === 0 ||
+    checkSuite["status"] !== "completed" ||
+    checkSuite["conclusion"] !== "success" ||
+    checkCount !== checks.length
+  ) {
     throw new EvidenceValidationError(
       "GithubCheckMissing",
       `${label} has no required check evidence`,
@@ -1367,15 +1392,6 @@ function validatePullRequest(
         `${label} check ${name} is not a same-head success`,
       );
     }
-  }
-  if (
-    checkNames.size !== requiredChecks.length ||
-    requiredChecks.some((name) => !checkNames.has(name))
-  ) {
-    throw new EvidenceValidationError(
-      "GithubCheckMissing",
-      `${label} checks do not exactly cover its required check names`,
-    );
   }
 }
 
@@ -1502,11 +1518,15 @@ function validateGithubClosureEvidence(
       ],
       `legacy Ticket ${legacyTicket} issue`,
     );
+    const expectedStatus = legacyTicket === 31 ? "superseded" : "resolved";
     if (
       issue["number"] !== REQUIRED_CLOSURE_ISSUES[legacyTicket - 1] ||
       issue["parentIssue"] !== 67 ||
-      (issue["state"] !== "closed" && issue["status"] !== "superseded") ||
-      (issue["status"] !== "resolved" && issue["status"] !== "superseded")
+      issue["state"] !== "closed" ||
+      issue["status"] !== expectedStatus ||
+      (expectedStatus === "superseded"
+        ? issue["supersededBy"] !== 48
+        : issue["supersededBy"] !== undefined)
     ) {
       throw new EvidenceValidationError(
         "GithubTicketStatusInvalid",
@@ -1526,13 +1546,8 @@ function validateGithubClosureEvidence(
     if (
       (issue["status"] === "resolved" &&
         (todoTotal === 0 || todoCompleted !== todoTotal)) ||
-      (issue["status"] === "superseded" &&
-        (todoCompleted > todoTotal ||
-          typeof issue["supersededBy"] !== "number" ||
-          !Number.isSafeInteger(issue["supersededBy"]) ||
-          issue["supersededBy"] < 1 ||
-          issue["supersededBy"] > 48 ||
-          issue["supersededBy"] === legacyTicket))
+      (expectedStatus === "superseded" &&
+        (todoCompleted > todoTotal || issue["supersededBy"] !== 48))
     ) {
       throw new EvidenceValidationError(
         "GithubTicketTodoIncomplete",
@@ -1573,7 +1588,7 @@ function validateGithubClosureEvidence(
         `legacy Ticket ${legacyTicket} does not match the authoritative dependency graph`,
       );
     }
-    if (issue["status"] === "resolved") {
+    if (expectedStatus === "resolved") {
       if (ticket["pullRequest"] === undefined) {
         throw new EvidenceValidationError(
           "GithubPullRequestNotMerged",
@@ -1661,16 +1676,15 @@ function validateGithubClosureEvidence(
       `legacy Ticket ${legacyTicket} issue`,
     );
     const classification = item["classification"];
+    const expectedClassification =
+      legacyTicket === 46 ? "superseded" : "resolved-remediation";
     if (
       issue["number"] !== REQUIRED_REMEDIATION_ISSUES[legacyTicket - 36] ||
       issue["parentIssue"] !== 67 ||
-      (classification !== "resolved-remediation" &&
-        classification !== "deferred-advanced-hardening" &&
-        classification !== "superseded") ||
+      classification !== expectedClassification ||
       item["blocking"] !== false ||
-      typeof item["parentLegacyTicket"] !== "number" ||
-      item["parentLegacyTicket"] < 1 ||
-      item["parentLegacyTicket"] > 35
+      item["parentLegacyTicket"] !==
+        REQUIRED_REMEDIATION_PARENTS[legacyTicket - 36]
     ) {
       throw new EvidenceValidationError(
         "GithubRemediationInvalid",
@@ -1685,11 +1699,7 @@ function validateGithubClosureEvidence(
       (classification === "superseded" &&
         (issue["state"] !== "closed" ||
           issue["status"] !== "superseded" ||
-          typeof item["supersededBy"] !== "number" ||
-          !Number.isSafeInteger(item["supersededBy"]) ||
-          item["supersededBy"] < 1 ||
-          item["supersededBy"] > 48 ||
-          item["supersededBy"] === legacyTicket))
+          item["supersededBy"] !== 48))
     ) {
       throw new EvidenceValidationError(
         "GithubRemediationStatusInvalid",
@@ -2010,22 +2020,29 @@ async function validateProviderEvidence(
         "scope",
         "status",
         "scannedArtifactSha256",
+        "scannedArtifact",
       ],
       `provider ${scope} redaction report`,
+    );
+    const scannedArtifact = parseEvidenceReference(
+      scan["scannedArtifact"],
+      `provider ${scope} scanned artifact`,
     );
     if (
       scan["schemaVersion"] !== "qualigence-provider-redaction-scan/v1" ||
       scan["scope"] !== scope ||
       scan["status"] !== "clean" ||
       typeof scan["scannedArtifactSha256"] !== "string" ||
-      !/^[a-f0-9]{64}$/u.test(scan["scannedArtifactSha256"])
+      !/^[a-f0-9]{64}$/u.test(scan["scannedArtifactSha256"]) ||
+      scan["scannedArtifactSha256"] !== scannedArtifact.sha256
     ) {
       throw new EvidenceValidationError(
         "ProviderRedactionEvidenceInvalid",
         `provider ${scope} redaction report is not clean and hash-bound`,
       );
     }
-    references.push(reference);
+    await readEvidenceBytes(input, "provider", scannedArtifact);
+    references.push(reference, scannedArtifact);
   }
   if (
     new Set(references.map((reference) => reference.path)).size !==
@@ -2055,6 +2072,7 @@ function validateBenchmarkEvidence(
       "evidenceClass",
       "manifest",
       "groundTruth",
+      "runnerInputs",
       "report",
       "attempts",
       "invocations",
@@ -2172,6 +2190,7 @@ function validateBenchmarkEvidence(
     );
   }
   const scenarioIds = new Set<string>();
+  const scenariosById = new Map<string, Record<string, unknown>>();
   const scenarioModes = new Map<string, "normal" | "fault">();
   const expectedDefectsByScenario = new Map<string, ReadonlySet<string>>();
   for (const [index, value] of scenarios.entries()) {
@@ -2201,6 +2220,7 @@ function validateBenchmarkEvidence(
       );
     }
     scenarioIds.add(scenarioId);
+    scenariosById.set(scenarioId, scenario);
     const fixtureId = requireString(
       scenario,
       "fixtureId",
@@ -2345,14 +2365,128 @@ function validateBenchmarkEvidence(
   const manifestHash = sha256Hex(canonicalJson(manifest));
   const profileHash = sha256Hex(canonicalJson(profile));
   const groundTruthHash = sha256Hex(canonicalJson(groundTruth));
+  const runnerInputs = asRecord(
+    evidence["runnerInputs"],
+    "benchmark runner inputs",
+  );
+  assertKeys(
+    runnerInputs,
+    ["policy", "scenarioDefinitions"],
+    "benchmark runner inputs",
+  );
+  const policy = asRecord(runnerInputs["policy"], "benchmark runner policy");
+  assertKeys(
+    policy,
+    [
+      "seedSkillBundleIds",
+      "allowedActionKinds",
+      "allowedOrigins",
+      "maximumSteps",
+      "maximumWallClockMs",
+      "maximumModelTokens",
+      "maximumStateVisits",
+      "maximumRecoveries",
+      "riskCeiling",
+    ],
+    "benchmark runner policy",
+  );
+  if (
+    !Array.isArray(policy["seedSkillBundleIds"]) ||
+    policy["seedSkillBundleIds"].length !== 0 ||
+    canonicalJson(policy["allowedActionKinds"]) !==
+      canonicalJson(["navigate", "click", "input"]) ||
+    !Array.isArray(policy["allowedOrigins"]) ||
+    policy["allowedOrigins"].length === 0 ||
+    policy["allowedOrigins"].some(
+      (origin) => typeof origin !== "string" || origin.trim() === "",
+    ) ||
+    policy["maximumSteps"] !== profile["maximumSteps"] ||
+    policy["maximumWallClockMs"] !== profile["maximumWallClockMs"] ||
+    policy["maximumModelTokens"] !== profile["maximumModelTokens"] ||
+    policy["maximumStateVisits"] !== profile["maximumSteps"] ||
+    policy["maximumRecoveries"] !== 0 ||
+    policy["riskCeiling"] !== "RecoverableMutation"
+  ) {
+    throw new EvidenceValidationError(
+      "BenchmarkRunnerBindingInvalid",
+      "benchmark runner policy does not match the frozen Reference Model profile",
+    );
+  }
+  const scenarioDefinitions = requireArray(
+    runnerInputs,
+    "scenarioDefinitions",
+    "benchmark runner inputs",
+  );
+  const definitionsByScenario = new Map<string, Record<string, unknown>>();
+  for (const [index, value] of scenarioDefinitions.entries()) {
+    const definition = asRecord(
+      value,
+      `benchmark scenario definition ${index}`,
+    );
+    assertKeys(
+      definition,
+      ["scenarioId", "mode", "seedUrl", "states"],
+      `benchmark scenario definition ${index}`,
+    );
+    const scenarioId = requireString(
+      definition,
+      "scenarioId",
+      `benchmark scenario definition ${index}`,
+    );
+    const states = requireArray(
+      definition,
+      "states",
+      `benchmark scenario definition ${scenarioId}`,
+    );
+    if (
+      definitionsByScenario.has(scenarioId) ||
+      !scenarioIds.has(scenarioId) ||
+      definition["mode"] !== scenarioModes.get(scenarioId) ||
+      states.length === 0
+    ) {
+      throw new EvidenceValidationError(
+        "BenchmarkRunnerBindingInvalid",
+        `benchmark scenario definition ${scenarioId} is missing, duplicated, or inconsistent`,
+      );
+    }
+    definitionsByScenario.set(scenarioId, definition);
+  }
+  if (definitionsByScenario.size !== scenarioIds.size) {
+    throw new EvidenceValidationError(
+      "BenchmarkRunnerBindingInvalid",
+      "benchmark runner inputs do not contain every scenario definition",
+    );
+  }
+  const policyBindingHash = sha256Hex(canonicalJson(policy));
+  const seedBindingHash = sha256Hex(
+    canonicalJson({
+      policySeedSkillBundleIds: policy["seedSkillBundleIds"],
+      seeds: [],
+    }),
+  );
+  const expectedInputSha256 = sha256Hex(
+    canonicalJson({
+      manifestSha256: manifestHash,
+      profileSha256: profileHash,
+      groundTruthSha256: groundTruthHash,
+      policyBindingHash,
+      seedBindingHash,
+      scenarioDefinitions: [...definitionsByScenario.values()].sort(
+        (left, right) => {
+          const leftId = String(left["scenarioId"]).normalize("NFC");
+          const rightId = String(right["scenarioId"]).normalize("NFC");
+          return leftId < rightId ? -1 : leftId > rightId ? 1 : 0;
+        },
+      ),
+    }),
+  );
   if (
     report["benchmarkVersion"] !== benchmarkVersion ||
     report["profileStatus"] !== "reference" ||
     report["profileSha256"] !== profileHash ||
     report["manifestSha256"] !== manifestHash ||
     report["groundTruthSha256"] !== groundTruthHash ||
-    typeof report["inputSha256"] !== "string" ||
-    !/^[a-f0-9]{64}$/u.test(report["inputSha256"]) ||
+    report["inputSha256"] !== expectedInputSha256 ||
     !Number.isFinite(
       Date.parse(requireString(report, "createdAt", "benchmark report")),
     ) ||
@@ -2461,7 +2595,7 @@ function validateBenchmarkEvidence(
   const seenAttemptIds = new Set<string>();
   const seenBindings = new Set<string>();
   const seenInvocationIds = new Set<string>();
-  const runId = sha256Hex(String(report["inputSha256"]));
+  const runId = sha256Hex(expectedInputSha256);
   const parsedAttempts: {
     readonly scenarioId: string;
     readonly repetition: number;
@@ -2510,12 +2644,42 @@ function validateBenchmarkEvidence(
       },
     );
     const slot = `${scenarioId}\u0000${repetition}`;
+    const manifestScenario = scenariosById.get(scenarioId);
+    const scenarioDefinition = definitionsByScenario.get(scenarioId);
+    const sourceBindingHash =
+      manifestScenario === undefined || scenarioDefinition === undefined
+        ? undefined
+        : sha256Hex(
+            canonicalJson({
+              benchmarkVersion,
+              manifestSha256: manifestHash,
+              profileSha256: profileHash,
+              groundTruthSha256: groundTruthHash,
+              scenario: manifestScenario,
+              scenarioDefinition,
+              repetition,
+            }),
+          );
+    const expectedBindingHash =
+      sourceBindingHash === undefined
+        ? undefined
+        : sha256Hex(
+            canonicalJson({
+              runId,
+              sourceBindingHash,
+              policyBindingHash,
+              seedBindingHash,
+              scenarioId,
+              repetition,
+            }),
+          );
     if (
       !scenarioIds.has(scenarioId) ||
       attempt["mode"] !== scenarioModes.get(scenarioId) ||
       attempt["profileSha256"] !== profileHash ||
       !bindingHashes.includes(bindingSha256) ||
       seenBindings.has(bindingSha256) ||
+      bindingSha256 !== expectedBindingHash ||
       attemptId !== `${runId}:${bindingSha256}` ||
       repetition > repetitions ||
       seenSlots.has(slot) ||
@@ -2899,20 +3063,25 @@ async function validateReleaseManifestEvidence(
     "release manifest.sbom",
   );
   const gates = requireArray(manifest, "gates", "release manifest");
-  const gateReferences = gates.map((value, index) => {
+  const gateReferences = gates.flatMap((value, index) => {
     const gate = asRecord(value, `release manifest.gates[${index}]`);
-    return {
-      path: requireString(
-        gate,
-        "artifactPath",
-        `release manifest.gates[${index}]`,
-      ),
-      sha256: requireString(
-        gate,
-        "artifactSha256",
-        `release manifest.gates[${index}]`,
-      ),
-    };
+    const artifactSha256 = requireString(
+      gate,
+      "artifactSha256",
+      `release manifest.gates[${index}]`,
+    );
+    return typeof gate["artifactPath"] === "string"
+      ? [
+          {
+            path: requireString(
+              gate,
+              "artifactPath",
+              `release manifest.gates[${index}]`,
+            ),
+            sha256: artifactSha256,
+          },
+        ]
+      : [];
   });
   const releasePrefix = `artifacts/release/${input.version}/`;
   await assertManifestPathConfined(

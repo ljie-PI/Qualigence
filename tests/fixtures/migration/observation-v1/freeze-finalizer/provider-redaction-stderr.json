@@ -7,5 +7,9 @@
   "evidenceClass": "real",
   "scope": "stderr",
   "status": "clean",
-  "scannedArtifactSha256": "2222222222222222222222222222222222222222222222222222222222222222"
+  "scannedArtifactSha256": "67b7e7fa7ee1f8063b3b06e28e601461d0f5c3db92d2fca8122080284095f74f",
+  "scannedArtifact": {
+    "path": "artifacts/release/v0.1.0-candidate/provider-output-stderr.json",
+    "sha256": "67b7e7fa7ee1f8063b3b06e28e601461d0f5c3db92d2fca8122080284095f74f"
+  }
 }

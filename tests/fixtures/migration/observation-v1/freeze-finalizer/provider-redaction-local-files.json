@@ -7,5 +7,9 @@
   "evidenceClass": "real",
   "scope": "local-files",
   "status": "clean",
-  "scannedArtifactSha256": "5555555555555555555555555555555555555555555555555555555555555555"
+  "scannedArtifactSha256": "c676cf02036b7bf553f6960073044c31a52bce978bd00454c2f83f3bd47e469f",
+  "scannedArtifact": {
+    "path": "artifacts/release/v0.1.0-candidate/provider-output-local-files.json",
+    "sha256": "c676cf02036b7bf553f6960073044c31a52bce978bd00454c2f83f3bd47e469f"
+  }
 }

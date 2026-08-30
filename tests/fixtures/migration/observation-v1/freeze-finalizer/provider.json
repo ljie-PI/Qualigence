@@ -49,35 +49,35 @@
       "scope": "stdout",
       "report": {
         "path": "artifacts/release/v0.1.0-candidate/provider-redaction-stdout.json",
-        "sha256": "19ab75109b806077b75d2ca0233c10275566f0e235c35116e0a822f1dd961d03"
+        "sha256": "63817c0a53844bacbf1725dc2460de2134d7999260580172df01d4989aed6fa2"
       }
     },
     {
       "scope": "stderr",
       "report": {
         "path": "artifacts/release/v0.1.0-candidate/provider-redaction-stderr.json",
-        "sha256": "623bcd9f7501fa738c0f022b2d1b8786b8f34a1ce3d2358c35841b3d372f0083"
+        "sha256": "32cd6d06d607ab1e3bc5ccafcf3a59b34e7e54b07e117097c52cf6e22484204a"
       }
     },
     {
       "scope": "persisted-summaries",
       "report": {
         "path": "artifacts/release/v0.1.0-candidate/provider-redaction-summaries.json",
-        "sha256": "6eea610deea44911fc0a7b507a0a89541d0140823bf652939f886f8e4d543353"
+        "sha256": "a80d24155ee17bb2e8a4b5c0f10344d432486f288892ed66a33d85ed7ebd7e3e"
       }
     },
     {
       "scope": "artifacts",
       "report": {
         "path": "artifacts/release/v0.1.0-candidate/provider-redaction-artifacts.json",
-        "sha256": "e7dc8518fddb3b9c79681bded6dab51142090428fbde62b4947870c4d31bfbc0"
+        "sha256": "a84a830d0335ba20fd6555daa24c1e579d287a5e814c179f2652abc5658760ba"
       }
     },
     {
       "scope": "local-files",
       "report": {
         "path": "artifacts/release/v0.1.0-candidate/provider-redaction-local-files.json",
-        "sha256": "d70025738b26717930aef8626a2b4f9bd1cd0736bdf97a93a127f071357e5352"
+        "sha256": "15ba0d01efe24d48ae8df1c451fcd9e19cd28b7efc3e789bfa4e9c6de8be6777"
       }
     }
   ]

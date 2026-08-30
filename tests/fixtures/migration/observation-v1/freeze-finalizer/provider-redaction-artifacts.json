@@ -7,5 +7,9 @@
   "evidenceClass": "real",
   "scope": "artifacts",
   "status": "clean",
-  "scannedArtifactSha256": "4444444444444444444444444444444444444444444444444444444444444444"
+  "scannedArtifactSha256": "546b6fd309e6f6675290322ddc9fcd06c8cea1c0e294f436c5d9fbdf934e4a21",
+  "scannedArtifact": {
+    "path": "artifacts/release/v0.1.0-candidate/provider-output-artifacts.json",
+    "sha256": "546b6fd309e6f6675290322ddc9fcd06c8cea1c0e294f436c5d9fbdf934e4a21"
+  }
 }

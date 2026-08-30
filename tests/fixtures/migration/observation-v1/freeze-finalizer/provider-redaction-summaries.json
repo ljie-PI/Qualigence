@@ -7,5 +7,9 @@
   "evidenceClass": "real",
   "scope": "persisted-summaries",
   "status": "clean",
-  "scannedArtifactSha256": "3333333333333333333333333333333333333333333333333333333333333333"
+  "scannedArtifactSha256": "33aed77ab9410d96954272dce72347cb7d2ce02f0c32da9507917b8ebd1fc6a2",
+  "scannedArtifact": {
+    "path": "artifacts/release/v0.1.0-candidate/provider-output-summaries.json",
+    "sha256": "33aed77ab9410d96954272dce72347cb7d2ce02f0c32da9507917b8ebd1fc6a2"
+  }
 }
