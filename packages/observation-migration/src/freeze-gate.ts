@@ -5055,11 +5055,15 @@ async function publishDecision(
   let primaryError: GraphFreezeFinalizationError | undefined;
   try {
     await assertDecisionOutputPath(repositoryRoot, path);
+    if (await reconcileExistingDecision(repositoryRoot, path, bytes)) {
+      return;
+    }
     await mkdir(dirname(path), { recursive: true });
     await assertDecisionOutputPath(repositoryRoot, path);
     await writeFile(temporary, bytes, { encoding: "utf8", flag: "wx" });
     abortIfRequested(signal);
     await assertDecisionOutputPath(repositoryRoot, path);
+    abortIfRequested(signal);
     try {
       await link(temporary, path);
     } catch (error) {
@@ -5136,6 +5140,34 @@ async function publishDecision(
         );
       }
     }
+  }
+}
+
+async function reconcileExistingDecision(
+  repositoryRoot: string,
+  path: string,
+  bytes: string,
+): Promise<boolean> {
+  try {
+    await assertDecisionOutputPath(repositoryRoot, path);
+    const existing = await readFile(path, "utf8");
+    if (existing === bytes) {
+      return true;
+    }
+    const existingHash = createHash("sha256").update(existing).digest("hex");
+    const expectedHash = createHash("sha256").update(bytes).digest("hex");
+    throw new GraphFreezeFinalizationError(
+      "DecisionArtifactConflict",
+      `${path} contains ${existingHash}, not recomputed ${expectedHash}`,
+    );
+  } catch (error) {
+    if (error instanceof GraphFreezeFinalizationError) {
+      throw error;
+    }
+    if (hasCode(error, "ENOENT")) {
+      return false;
+    }
+    throw error;
   }
 }
 
