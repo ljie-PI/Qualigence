@@ -79,7 +79,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          [[ "$RELEASE_VERSION" =~ ^[A-Za-z0-9._-]+$ ]]
+          [[ "$RELEASE_VERSION" =~ ^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9_-])?$ ]]
           [[ "$WINDOWS_EVIDENCE_PATH" != /* ]]
           [[ "$WINDOWS_EVIDENCE_PATH" != *..* ]]
           existing_release_artifacts="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=release-${RELEASE_VERSION}&per_page=100" --jq '[.artifacts[] | select(.expired == false)] | length')"
@@ -104,7 +104,6 @@ jobs:
           test "$verified" = true
           jq -r '.deliveries[] | [.gate, .artifactId] | @tsv' release-work/gate-artifacts.json | while IFS=$'\t' read -r gate artifact_id; do
             gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > "release-work/${gate}.zip"
-            sha256sum "release-work/${gate}.zip" > "release-work/${gate}.zip.sha256"
           done
       - name: Build deploy roots for release SBOM
         shell: bash
@@ -123,6 +122,24 @@ jobs:
           find release-work/deploy -type d \( -name test -o -name tests -o -name __tests__ \) -prune -exec rm -rf {} +
           find release-work/deploy -type f \( -name '*.ts' -o -name '*.tsx' -o -name '*.map' -o -name '*.tsbuildinfo' \) -delete
           node scripts/verify-release-manifest.mjs scan-root --roots release-work/deploy/server,release-work/deploy/worker,release-work/deploy/admin
+      - name: Materialize verified Gate archives
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          release_dir="artifacts/release/${RELEASE_VERSION}"
+          test -d "$release_dir"
+          mkdir -p "$release_dir/gates"
+          for gate in gate-linux gate-windows-rust gate-self-hosted browser-e2e; do
+            source="release-work/${gate}.zip"
+            destination="$release_dir/gates/${gate}.zip"
+            test -f "$source"
+            test ! -e "$destination"
+            cp "$source" "$destination"
+            test "$(sha256sum "$source" | awk '{print $1}')" = "$(sha256sum "$destination" | awk '{print $1}')"
+          done
+          test "$(find "$release_dir/gates" -maxdepth 1 -type f -name '*.zip' | wc -l)" = 4
       - name: Log in to GHCR
         shell: bash
         run: echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
@@ -247,17 +264,21 @@ jobs:
           };
           const gateArtifacts = JSON.parse(readFileSync('release-work/gate-artifacts.json', 'utf8'));
           if (gateArtifacts.status !== 'verified') throw new Error('GateArtifactsNotVerified');
-          const gates = gateArtifacts.deliveries.map((delivery) => ({
-            name: delivery.gate,
-            artifactName: `${delivery.gate}.zip`,
-            artifactId: String(delivery.artifactId),
-            runId: String(delivery.runId),
-            artifactSha256: sha(`release-work/${delivery.gate}.zip`),
-            reportSha256: delivery.reportSha256,
-            vitestSha256: delivery.vitestSha256,
-            receiptSha256: delivery.receiptSha256,
-            commit: delivery.commit,
-          }));
+          const gates = gateArtifacts.deliveries.map((delivery) => {
+            const artifactPath = `artifacts/release/${version}/gates/${delivery.gate}.zip`;
+            return {
+              name: delivery.gate,
+              artifactName: `${delivery.gate}.zip`,
+              artifactPath,
+              artifactId: String(delivery.artifactId),
+              runId: String(delivery.runId),
+              artifactSha256: sha(artifactPath),
+              reportSha256: delivery.reportSha256,
+              vitestSha256: delivery.vitestSha256,
+              receiptSha256: delivery.receiptSha256,
+              commit: delivery.commit,
+            };
+          });
           const windowsEvidenceJson = parseJsonEvidence(process.env.WINDOWS_EVIDENCE_PATH);
           const windowsSignatures = windowsEvidenceJson.WindowsChecklistSignatures || windowsEvidenceJson.windowsChecklistSignatures || windowsEvidenceJson.signatures;
           if (!Array.isArray(windowsSignatures)) throw new Error('WindowsEvidenceSignaturesUnavailable');
@@ -324,6 +345,7 @@ jobs:
           path: |
             artifacts/release/${{ inputs.version }}/release-manifest.json
             artifacts/release/${{ inputs.version }}/sbom.spdx.json
+            artifacts/release/${{ inputs.version }}/gates/
           if-no-files-found: error
       # v4.6.2, reviewed immutable action commit.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

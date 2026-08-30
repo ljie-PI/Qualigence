@@ -7,7 +7,10 @@
   "required": ["schemaVersion", "version", "repository", "commit", "generatedAt", "images", "sbom", "gateEvidence", "gates", "windowsEvidence"],
   "properties": {
     "schemaVersion": { "const": "qualigence-release-manifest/v1" },
-    "version": { "type": "string", "minLength": 1 },
+    "version": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9_-])?$"
+    },
     "repository": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
     "commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
     "generatedAt": { "type": "string", "format": "date-time" },
@@ -85,18 +88,22 @@
         "schemaVersion": { "const": "qualigence-release-gate-evidence/v1" },
         "commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
         "status": { "const": "verified" },
-        "deliveries": { "type": "array", "minItems": 4 }
+        "deliveries": { "type": "array", "minItems": 4, "maxItems": 4 }
       }
     },
     "gate": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "artifactName", "artifactSha256", "commit", "runId", "artifactId", "reportSha256", "vitestSha256", "receiptSha256"],
+      "required": ["name", "artifactName", "artifactPath", "artifactSha256", "commit", "runId", "artifactId", "reportSha256", "vitestSha256", "receiptSha256"],
       "properties": {
         "name": { "enum": ["gate-linux", "gate-windows-rust", "gate-self-hosted", "browser-e2e"] },
         "artifactName": { "type": "string", "minLength": 1 },
         "artifactSha256": { "$ref": "#/$defs/sha256" },
-        "artifactPath": { "type": "string", "minLength": 1 },
+        "artifactPath": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!/)(?![A-Za-z]:/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*//)(?!.*\\\\).+$"
+        },
         "commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
         "runId": { "type": "string", "minLength": 1 },
         "artifactId": { "type": "string", "minLength": 1 },

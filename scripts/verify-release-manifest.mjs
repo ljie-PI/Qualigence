@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { link, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { link, lstat, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -29,6 +29,7 @@ const WINDOWS_M3_CHECKLIST_VERSION = "windows-m3-manual-checklist/v1";
 const SPDX_SCHEMA_VERSION = "SPDX-2.3";
 const SHA256_HEX = /^[a-f0-9]{64}$/;
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
+const RELEASE_VERSION = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9_-])?$/;
 
 class ReleaseManifestError extends Error {
   constructor(code, message) {
@@ -49,6 +50,12 @@ function asNonEmptyString(value, name) {
     throw new ReleaseManifestError("ManifestShapeInvalid", `${name} must be a non-empty string`);
   }
   return value;
+}
+
+function asIdentifier(value, name) {
+  if (typeof value === "string" && value.trim() !== "") return value;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return String(value);
+  throw new ReleaseManifestError("ManifestShapeInvalid", `${name} must be a non-empty string or positive integer`);
 }
 
 function assertKeys(record, allowedKeys, name) {
@@ -83,6 +90,14 @@ function assertDigestReference(value, name) {
     throw new ReleaseManifestError("MutableImageReference", `${name} must not include a tag before the digest`);
   }
   return text;
+}
+
+function assertReleaseVersion(value) {
+  const version = asNonEmptyString(value, "version");
+  if (!RELEASE_VERSION.test(version)) {
+    throw new ReleaseManifestError("ReleaseVersionInvalid", "version must be a canonical filesystem-safe release identifier");
+  }
+  return version;
 }
 
 function parseArgs(argv) {
@@ -147,6 +162,44 @@ function resolveManifestPath(manifestPath, referencedPath) {
   const manifestDir = dirname(resolve(manifestPath));
   const candidates = [resolve(repoRoot, safePath), resolve(manifestDir, safePath)];
   return candidates;
+}
+
+function expectedGateArtifactPath(manifestPath, version, gateName) {
+  const manifestFile = resolve(manifestPath);
+  const versionDirectory = dirname(manifestFile);
+  if (basename(manifestFile) !== "release-manifest.json" || basename(versionDirectory) !== version) {
+    throw new ReleaseManifestError("ManifestPathVersionMismatch", `manifest must be stored under its selected version directory ${version}`);
+  }
+  const expected = relative(resolve(process.cwd()), join(versionDirectory, "gates", `${gateName}.zip`)).split(sep).join("/");
+  return assertRepoRelativePath(expected, `${gateName}.artifactPath`);
+}
+
+async function assertMaterializedGatePath(artifactPath, gateName) {
+  const repoRoot = resolve(process.cwd());
+  const relativePath = relative(repoRoot, artifactPath);
+  if (relativePath === "" || relativePath === ".." || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) {
+    throw new ReleaseManifestError("GateArtifactPathInvalid", `${gateName}.artifactPath must stay inside the repository`);
+  }
+  let current = repoRoot;
+  const segments = relativePath.split(sep);
+  for (const [index, segment] of segments.entries()) {
+    current = join(current, segment);
+    let metadata;
+    try {
+      metadata = await lstat(current);
+    } catch (error) {
+      if (error && error.code === "ENOENT") {
+        throw new ReleaseManifestError("GateArtifactMissing", `${gateName} materialized archive is missing`);
+      }
+      throw error;
+    }
+    if (metadata.isSymbolicLink()) {
+      throw new ReleaseManifestError("GateArtifactSymlink", `${gateName}.artifactPath must not contain symbolic links`);
+    }
+    if (index === segments.length - 1 && !metadata.isFile()) {
+      throw new ReleaseManifestError("GateArtifactFileInvalid", `${gateName}.artifactPath must reference a regular file`);
+    }
+  }
 }
 
 async function verifyReferencedHash(manifestPath, referencedPath, expectedSha256, label) {
@@ -367,38 +420,16 @@ async function verifyGateArchiveContents(archivePath, gate, commit) {
 }
 
 async function verifyGateArtifactBytes(manifestPath, gate, commit) {
-  if (gate.artifactPath !== undefined) {
-    const artifactPath = resolveManifestPath(manifestPath, assertRepoRelativePath(gate.artifactPath, `${gate.name}.artifactPath`))[0];
-    const bytes = await readFile(artifactPath);
-    assertZipArchive(bytes, `${gate.name} artifact`);
-    const actual = await sha256Bytes(bytes);
-    if (actual !== gate.artifactSha256) throw new ReleaseManifestError("GateArtifactHashMismatch", `${gate.name} expected ${gate.artifactSha256} but found ${actual}`);
-    await verifyGateArchiveContents(artifactPath, gate, commit);
-    return;
+  if (gate.artifactPath === undefined) {
+    throw new ReleaseManifestError("GateArtifactPathRequired", `${gate.name} requires a materialized artifactPath`);
   }
-  const token = process.env.GH_TOKEN;
-  const repository = process.env.GITHUB_REPOSITORY;
-  if (token === undefined || repository === undefined || gate.artifactId === undefined) {
-    throw new ReleaseManifestError("GateArtifactBytesUnavailable", `${gate.name} requires artifactPath or GH_TOKEN/GITHUB_REPOSITORY/artifactId to recompute artifact hash`);
-  }
-  const response = await fetch(`https://api.github.com/repos/${repository}/actions/artifacts/${gate.artifactId}/zip`, {
-    headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json" },
-    redirect: "follow",
-  });
-  if (!response.ok) throw new ReleaseManifestError("GateArtifactDownloadFailed", `${gate.name} artifact ${gate.artifactId} returned ${response.status}`);
-  const bytes = Buffer.from(await response.arrayBuffer());
+  const artifactPath = resolveManifestPath(manifestPath, assertRepoRelativePath(gate.artifactPath, `${gate.name}.artifactPath`))[0];
+  await assertMaterializedGatePath(artifactPath, gate.name);
+  const bytes = await readFile(artifactPath);
   assertZipArchive(bytes, `${gate.name} artifact`);
   const actual = await sha256Bytes(bytes);
-  if (actual !== gate.artifactSha256) {
-    throw new ReleaseManifestError("GateArtifactHashMismatch", `${gate.name} expected ${gate.artifactSha256} but found ${actual}`);
-  }
-  const archivePath = join(process.cwd(), `.tmp-release-gate-${gate.name}-${process.pid}.zip`);
-  await writeFile(archivePath, bytes);
-  try {
-    await verifyGateArchiveContents(archivePath, gate, commit);
-  } finally {
-    await rm(archivePath, { force: true });
-  }
+  if (actual !== gate.artifactSha256) throw new ReleaseManifestError("GateArtifactHashMismatch", `${gate.name} expected ${gate.artifactSha256} but found ${actual}`);
+  await verifyGateArchiveContents(artifactPath, gate, commit);
 }
 
 async function validateGateEvidenceReport(manifestPath, gateEvidence, commit) {
@@ -415,12 +446,45 @@ async function validateGateEvidenceReport(manifestPath, gateEvidence, commit) {
     throw new ReleaseManifestError("GateEvidenceReportInvalid", "gateEvidence must be a verified same-commit Ticket 33 report");
   }
   if (!Array.isArray(report.deliveries)) throw new ReleaseManifestError("GateEvidenceReportInvalid", "gateEvidence.deliveries must be an array");
-  return new Map(report.deliveries.map((delivery) => [asObject(delivery, "gate delivery").gate, delivery]));
+  const deliveries = new Map();
+  const artifactIds = new Set();
+  for (const delivery of report.deliveries) {
+    const record = asObject(delivery, "gate delivery");
+    assertKeys(record, ["gate", "artifactId", "runId", "commit", "reportSha256", "vitestSha256", "receiptSha256"], "gate delivery");
+    const gate = asNonEmptyString(record.gate, "gate delivery.gate");
+    if (!REQUIRED_GATES.includes(gate)) {
+      throw new ReleaseManifestError("GateEvidenceDeliveryUnexpected", `unexpected Gate evidence delivery ${gate}`);
+    }
+    if (deliveries.has(gate)) {
+      throw new ReleaseManifestError("GateEvidenceDeliveryDuplicate", `duplicate Gate evidence delivery ${gate}`);
+    }
+    const artifactId = asIdentifier(record.artifactId, `${gate}.artifactId`);
+    if (artifactIds.has(artifactId)) {
+      throw new ReleaseManifestError("GateArtifactIdDuplicate", `duplicate Gate artifactId ${artifactId}`);
+    }
+    artifactIds.add(artifactId);
+    asIdentifier(record.runId, `${gate}.runId`);
+    if (record.commit !== commit) {
+      throw new ReleaseManifestError("GateEvidenceDeliveryCommitMismatch", `${gate} delivery does not bind manifest commit`);
+    }
+    assertSha256(record.reportSha256, `${gate}.reportSha256`);
+    assertSha256(record.vitestSha256, `${gate}.vitestSha256`);
+    assertSha256(record.receiptSha256, `${gate}.receiptSha256`);
+    deliveries.set(gate, record);
+  }
+  for (const required of REQUIRED_GATES) {
+    if (!deliveries.has(required)) {
+      throw new ReleaseManifestError("GateEvidenceDeliveryMissing", `missing Gate evidence delivery ${required}`);
+    }
+  }
+  return deliveries;
 }
 
-async function validateRequiredGates(manifestPath, gates, commit, verifiedGateDeliveries) {
+async function validateRequiredGates(manifestPath, version, gates, commit, verifiedGateDeliveries) {
   if (!Array.isArray(gates)) throw new ReleaseManifestError("GateArtifactsInvalid", "gates must be an array");
   const seen = new Set();
+  const seenArtifactIds = new Set();
+  const seenArtifactPaths = new Set();
   for (const gate of gates) {
     const record = asObject(gate, "gate");
     assertKeys(record, ["name", "artifactName", "artifactSha256", "artifactPath", "commit", "runId", "artifactId", "reportSha256", "vitestSha256", "receiptSha256"], "gate");
@@ -431,9 +495,28 @@ async function validateRequiredGates(manifestPath, gates, commit, verifiedGateDe
     if (asNonEmptyString(record.commit, `${name}.commit`) !== commit) {
       throw new ReleaseManifestError("GateArtifactCommitMismatch", `${name} does not bind manifest commit`);
     }
-    asNonEmptyString(record.artifactName, `${name}.artifactName`);
+    const artifactName = asNonEmptyString(record.artifactName, `${name}.artifactName`);
+    if (artifactName !== `${name}.zip`) {
+      throw new ReleaseManifestError("GateArtifactNameInvalid", `${name}.artifactName must be ${name}.zip`);
+    }
     assertSha256(record.artifactSha256, `${name}.artifactSha256`);
-    if (record.artifactPath !== undefined) assertRepoRelativePath(record.artifactPath, `${name}.artifactPath`);
+    if (record.artifactPath === undefined) {
+      throw new ReleaseManifestError("GateArtifactPathRequired", `${name} requires a materialized artifactPath`);
+    }
+    const artifactPath = asNonEmptyString(record.artifactPath, `${name}.artifactPath`);
+    if (seenArtifactPaths.has(artifactPath)) {
+      throw new ReleaseManifestError("GateArtifactPathDuplicate", `duplicate Gate artifactPath ${artifactPath}`);
+    }
+    seenArtifactPaths.add(artifactPath);
+    const expectedArtifactPath = expectedGateArtifactPath(manifestPath, version, name);
+    if (artifactPath !== expectedArtifactPath) {
+      throw new ReleaseManifestError("GateArtifactPathInvalid", `${name}.artifactPath must be ${expectedArtifactPath}`);
+    }
+    const artifactId = asNonEmptyString(record.artifactId, `${name}.artifactId`);
+    if (seenArtifactIds.has(artifactId)) {
+      throw new ReleaseManifestError("GateArtifactIdDuplicate", `duplicate Gate artifactId ${artifactId}`);
+    }
+    seenArtifactIds.add(artifactId);
     assertSha256(record.reportSha256, `${name}.reportSha256`);
     assertSha256(record.vitestSha256, `${name}.vitestSha256`);
     assertSha256(record.receiptSha256, `${name}.receiptSha256`);
@@ -571,7 +654,7 @@ async function verifyManifest({ manifestPath, expectedRepository, expectedCommit
   if (manifest.schemaVersion !== MANIFEST_SCHEMA_VERSION) {
     throw new ReleaseManifestError("ManifestSchemaVersionInvalid", `expected ${MANIFEST_SCHEMA_VERSION}`);
   }
-  asNonEmptyString(manifest.version, "version");
+  const version = assertReleaseVersion(manifest.version);
   if (!Number.isFinite(Date.parse(asNonEmptyString(manifest.generatedAt, "generatedAt")))) throw new ReleaseManifestError("GeneratedAtInvalid", "generatedAt must be ISO-8601 parseable");
   const repository = asNonEmptyString(manifest.repository, "repository");
   const commit = asNonEmptyString(manifest.commit, "commit");
@@ -601,7 +684,7 @@ async function verifyManifest({ manifestPath, expectedRepository, expectedCommit
   validateSbomBinding(sbomJson, { repository, commit, applicationReference: applicationImage.reference, consoleReference: consoleImage.reference });
 
   const verifiedGateDeliveries = await validateGateEvidenceReport(manifestPath, manifest.gateEvidence, commit);
-  await validateRequiredGates(manifestPath, manifest.gates, commit, verifiedGateDeliveries);
+  await validateRequiredGates(manifestPath, version, manifest.gates, commit, verifiedGateDeliveries);
   const windowsEvidence = validateWindowsEvidence(manifest.windowsEvidence, commit);
   const windowsEvidencePath = await verifyReferencedHash(manifestPath, windowsEvidence.path, windowsEvidence.sha256, "Windows evidence");
   const windowsPayload = extractWindowsEvidencePayload(await readFile(windowsEvidencePath));
