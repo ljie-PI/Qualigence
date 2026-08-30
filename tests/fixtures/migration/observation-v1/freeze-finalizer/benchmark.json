@@ -9,65 +9,268 @@
     "schemaVersion": "detection-benchmark/v1",
     "benchmarkVersion": "detection-v1",
     "referenceProfile": {
-      "profileId": "qualigence-reference-v1",
+      "profileId": "detection-reference-v1",
       "providerId": "openai-compatible",
-      "modelId": "qualigence-reference-model",
-      "repetitions": 2
+      "modelId": "qualigence-reference-detector-1",
+      "promptVersion": "prompt/2026-08-01",
+      "policyBundleSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "skillPackSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "browserVersion": "chromium/reference-profile",
+      "fixtureVersions": {
+        "cart": "cart/1.0.0"
+      },
+      "maximumSteps": 40,
+      "maximumWallClockMs": 1800000,
+      "maximumModelTokens": 200000,
+      "repetitions": 3
     },
     "scenarios": [
       {
-        "scenarioId": "checkout-normal"
+        "scenarioId": "cart-normal",
+        "fixtureId": "cart",
+        "fixtureVersion": "cart/1.0.0",
+        "mode": "normal",
+        "missionRef": "scenarios/cart-normal.json",
+        "groundTruthRef": "ground-truth/cart.json",
+        "expectedDefectIds": []
       },
       {
-        "scenarioId": "checkout-known-fault"
+        "scenarioId": "cart-known-bugs",
+        "fixtureId": "cart",
+        "fixtureVersion": "cart/1.0.0",
+        "mode": "fault",
+        "missionRef": "scenarios/cart-known-bugs.json",
+        "groundTruthRef": "ground-truth/cart.json",
+        "expectedDefectIds": [
+          "cart-price-mismatch",
+          "cart-quantity-overflow",
+          "cart-discount-not-applied",
+          "cart-total-rounding",
+          "cart-checkout-500"
+        ]
+      }
+    ],
+    "thresholds": {
+      "p0RecallMinimum": 1,
+      "knownBugRecallMinimum": 0.8,
+      "findingPrecisionMinimum": 0.6,
+      "stableReproductionRateMinimum": 0.7,
+      "maximumHighConfidenceFalsePositivesPerNormalMission": 1
+    }
+  },
+  "groundTruth": {
+    "benchmarkVersion": "detection-v1",
+    "defects": [
+      {
+        "scenarioId": "cart-known-bugs",
+        "defectId": "cart-price-mismatch",
+        "severity": "P0",
+        "stable": true
+      },
+      {
+        "scenarioId": "cart-known-bugs",
+        "defectId": "cart-quantity-overflow",
+        "severity": "P1",
+        "stable": true
+      },
+      {
+        "scenarioId": "cart-known-bugs",
+        "defectId": "cart-discount-not-applied",
+        "severity": "P1",
+        "stable": true
+      },
+      {
+        "scenarioId": "cart-known-bugs",
+        "defectId": "cart-total-rounding",
+        "severity": "P2",
+        "stable": true
+      },
+      {
+        "scenarioId": "cart-known-bugs",
+        "defectId": "cart-checkout-500",
+        "severity": "P1",
+        "stable": false
       }
     ]
   },
   "report": {
+    "reportId": "ba29fbe7359f63b3b4f04e94b63df39d9f118ad8603f0271d3f3a618caf1d9bc",
     "benchmarkVersion": "detection-v1",
-    "profileSha256": "e2109986ac66ebd3e962f4f5ccd495e0590adf8e0dff2999dc56db5288151b39",
+    "manifestSha256": "c95bf01310a636f6662e7dee912436c4b150eff8593003bde326d9768ae5992b",
+    "profileSha256": "426b19246d2fa3f4edf0ccb3a7c0ae462958e37f9c60c241a856202f8a389099",
+    "groundTruthSha256": "39010dc7b9f20d8f7e3a052098ac58363d0cdcdb299ace10b9363227156b3bf2",
+    "inputSha256": "5555555555555555555555555555555555555555555555555555555555555555",
     "profileStatus": "reference",
     "attemptIds": [
-      "attempt-normal-1",
-      "attempt-normal-2",
-      "attempt-fault-1",
-      "attempt-fault-2"
+      "attempt-cart-bugs-1",
+      "attempt-cart-bugs-2",
+      "attempt-cart-bugs-3",
+      "attempt-cart-normal-1",
+      "attempt-cart-normal-2",
+      "attempt-cart-normal-3"
     ],
     "attemptBindingSha256s": [
       "1111111111111111111111111111111111111111111111111111111111111111",
       "2222222222222222222222222222222222222222222222222222222222222222",
       "3333333333333333333333333333333333333333333333333333333333333333",
-      "4444444444444444444444444444444444444444444444444444444444444444"
+      "4444444444444444444444444444444444444444444444444444444444444444",
+      "5555555555555555555555555555555555555555555555555555555555555555",
+      "6666666666666666666666666666666666666666666666666666666666666666"
     ],
+    "metrics": {
+      "p0Recall": {
+        "numerator": 1,
+        "denominator": 1,
+        "value": 1
+      },
+      "knownBugRecall": {
+        "numerator": 5,
+        "denominator": 5,
+        "value": 1
+      },
+      "findingPrecision": {
+        "numerator": 15,
+        "denominator": 15,
+        "value": 1
+      },
+      "stableReproductionRate": {
+        "numerator": 12,
+        "denominator": 12,
+        "value": 1
+      },
+      "highConfidenceFalsePositivesByNormalMission": {
+        "cart-normal": 0
+      }
+    },
     "gate": {
       "status": "passed",
       "failureCodes": []
-    }
+    },
+    "createdAt": "2026-08-30T07:25:00.000Z"
   },
   "attempts": [
     {
-      "attemptId": "attempt-normal-1",
-      "scenarioId": "checkout-normal",
+      "attemptId": "attempt-cart-normal-1",
+      "bindingSha256": "4444444444444444444444444444444444444444444444444444444444444444",
+      "profileSha256": "426b19246d2fa3f4edf0ccb3a7c0ae462958e37f9c60c241a856202f8a389099",
+      "scenarioId": "cart-normal",
+      "mode": "normal",
       "repetition": 1,
+      "findings": [],
       "invocationIds": ["benchmark-invocation-1"]
     },
     {
-      "attemptId": "attempt-normal-2",
-      "scenarioId": "checkout-normal",
+      "attemptId": "attempt-cart-normal-2",
+      "bindingSha256": "5555555555555555555555555555555555555555555555555555555555555555",
+      "profileSha256": "426b19246d2fa3f4edf0ccb3a7c0ae462958e37f9c60c241a856202f8a389099",
+      "scenarioId": "cart-normal",
+      "mode": "normal",
       "repetition": 2,
+      "findings": [],
       "invocationIds": ["benchmark-invocation-2"]
     },
     {
-      "attemptId": "attempt-fault-1",
-      "scenarioId": "checkout-known-fault",
-      "repetition": 1,
+      "attemptId": "attempt-cart-normal-3",
+      "bindingSha256": "6666666666666666666666666666666666666666666666666666666666666666",
+      "profileSha256": "426b19246d2fa3f4edf0ccb3a7c0ae462958e37f9c60c241a856202f8a389099",
+      "scenarioId": "cart-normal",
+      "mode": "normal",
+      "repetition": 3,
+      "findings": [],
       "invocationIds": ["benchmark-invocation-3"]
     },
     {
-      "attemptId": "attempt-fault-2",
-      "scenarioId": "checkout-known-fault",
-      "repetition": 2,
+      "attemptId": "attempt-cart-bugs-1",
+      "bindingSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "profileSha256": "426b19246d2fa3f4edf0ccb3a7c0ae462958e37f9c60c241a856202f8a389099",
+      "scenarioId": "cart-known-bugs",
+      "mode": "fault",
+      "repetition": 1,
+      "findings": [
+        {
+          "defectId": "cart-price-mismatch",
+          "confidence": "high"
+        },
+        {
+          "defectId": "cart-quantity-overflow",
+          "confidence": "high"
+        },
+        {
+          "defectId": "cart-discount-not-applied",
+          "confidence": "high"
+        },
+        {
+          "defectId": "cart-total-rounding",
+          "confidence": "high"
+        },
+        {
+          "defectId": "cart-checkout-500",
+          "confidence": "high"
+        }
+      ],
       "invocationIds": ["benchmark-invocation-4"]
+    },
+    {
+      "attemptId": "attempt-cart-bugs-2",
+      "bindingSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "profileSha256": "426b19246d2fa3f4edf0ccb3a7c0ae462958e37f9c60c241a856202f8a389099",
+      "scenarioId": "cart-known-bugs",
+      "mode": "fault",
+      "repetition": 2,
+      "findings": [
+        {
+          "defectId": "cart-price-mismatch",
+          "confidence": "high"
+        },
+        {
+          "defectId": "cart-quantity-overflow",
+          "confidence": "high"
+        },
+        {
+          "defectId": "cart-discount-not-applied",
+          "confidence": "high"
+        },
+        {
+          "defectId": "cart-total-rounding",
+          "confidence": "high"
+        },
+        {
+          "defectId": "cart-checkout-500",
+          "confidence": "high"
+        }
+      ],
+      "invocationIds": ["benchmark-invocation-5"]
+    },
+    {
+      "attemptId": "attempt-cart-bugs-3",
+      "bindingSha256": "3333333333333333333333333333333333333333333333333333333333333333",
+      "profileSha256": "426b19246d2fa3f4edf0ccb3a7c0ae462958e37f9c60c241a856202f8a389099",
+      "scenarioId": "cart-known-bugs",
+      "mode": "fault",
+      "repetition": 3,
+      "findings": [
+        {
+          "defectId": "cart-price-mismatch",
+          "confidence": "high"
+        },
+        {
+          "defectId": "cart-quantity-overflow",
+          "confidence": "high"
+        },
+        {
+          "defectId": "cart-discount-not-applied",
+          "confidence": "high"
+        },
+        {
+          "defectId": "cart-total-rounding",
+          "confidence": "high"
+        },
+        {
+          "defectId": "cart-checkout-500",
+          "confidence": "high"
+        }
+      ],
+      "invocationIds": ["benchmark-invocation-6"]
     }
   ],
   "invocations": [
@@ -88,6 +291,16 @@
     },
     {
       "invocationId": "benchmark-invocation-4",
+      "status": "succeeded",
+      "usageStatus": "known"
+    },
+    {
+      "invocationId": "benchmark-invocation-5",
+      "status": "succeeded",
+      "usageStatus": "known"
+    },
+    {
+      "invocationId": "benchmark-invocation-6",
       "status": "succeeded",
       "usageStatus": "known"
     }

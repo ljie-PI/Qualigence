@@ -259,6 +259,8 @@ function validateFinalizerInput(input: FinalizeGraphFreezeInput): void {
   if (
     !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(input.repository) ||
     !/^[A-Za-z0-9._-]+$/u.test(input.version) ||
+    input.version === "." ||
+    input.version === ".." ||
     !/^[a-f0-9]{40}$/u.test(input.commit) ||
     !Number.isFinite(Date.parse(input.decidedAt)) ||
     input.repositoryRoot.trim() === ""
@@ -647,7 +649,10 @@ function validateCandidateMigrationEvidence(
     if (
       assetKind === undefined ||
       result["assetKind"] !== assetKind ||
-      !migratorVersion.startsWith(OBSERVATION_MIGRATOR_VERSION)
+      (assetKind === "observation" &&
+        migratorVersion !== OBSERVATION_MIGRATOR_VERSION) ||
+      (assetKind === "skill" &&
+        migratorVersion !== `${OBSERVATION_MIGRATOR_VERSION}+skill-compiler/v1`)
     ) {
       throw new EvidenceValidationError(
         "MigrationInventoryMismatch",
@@ -1316,6 +1321,7 @@ function validateGithubClosureEvidence(
         "todoTotal",
         "todoCompleted",
         "blockedBy",
+        "supersededBy",
       ],
       `legacy Ticket ${legacyTicket} issue`,
     );
@@ -1340,10 +1346,20 @@ function validateGithubClosureEvidence(
       "todoCompleted",
       `legacy Ticket ${legacyTicket} issue`,
     );
-    if (todoTotal === 0 || todoCompleted !== todoTotal) {
+    if (
+      (issue["status"] === "resolved" &&
+        (todoTotal === 0 || todoCompleted !== todoTotal)) ||
+      (issue["status"] === "superseded" &&
+        (todoCompleted > todoTotal ||
+          typeof issue["supersededBy"] !== "number" ||
+          !Number.isSafeInteger(issue["supersededBy"]) ||
+          issue["supersededBy"] < 1 ||
+          issue["supersededBy"] > 48 ||
+          issue["supersededBy"] === legacyTicket))
+    ) {
       throw new EvidenceValidationError(
         "GithubTicketTodoIncomplete",
-        `legacy Ticket ${legacyTicket} has incomplete tracked work`,
+        `legacy Ticket ${legacyTicket} has incomplete work without a valid superseding authority`,
       );
     }
     const blockedBy = requireArray(
@@ -1698,6 +1714,7 @@ function validateBenchmarkEvidence(
       "generatedAt",
       "evidenceClass",
       "manifest",
+      "groundTruth",
       "report",
       "attempts",
       "invocations",
@@ -1713,6 +1730,17 @@ function validateBenchmarkEvidence(
   assertBinding(evidence, input, "benchmark evidence");
 
   const manifest = asRecord(evidence["manifest"], "benchmark manifest");
+  assertKeys(
+    manifest,
+    [
+      "schemaVersion",
+      "benchmarkVersion",
+      "referenceProfile",
+      "scenarios",
+      "thresholds",
+    ],
+    "benchmark manifest",
+  );
   if (manifest["schemaVersion"] !== "detection-benchmark/v1") {
     throw new EvidenceValidationError(
       "BenchmarkManifestInvalid",
@@ -1728,14 +1756,73 @@ function validateBenchmarkEvidence(
     manifest["referenceProfile"],
     "benchmark reference profile",
   );
-  requireString(profile, "profileId", "benchmark reference profile");
-  requireString(profile, "providerId", "benchmark reference profile");
-  requireString(profile, "modelId", "benchmark reference profile");
+  assertKeys(
+    profile,
+    [
+      "profileId",
+      "providerId",
+      "modelId",
+      "promptVersion",
+      "policyBundleSha256",
+      "skillPackSha256",
+      "browserVersion",
+      "fixtureVersions",
+      "maximumSteps",
+      "maximumWallClockMs",
+      "maximumModelTokens",
+      "repetitions",
+    ],
+    "benchmark reference profile",
+  );
+  for (const key of [
+    "profileId",
+    "providerId",
+    "modelId",
+    "promptVersion",
+    "browserVersion",
+  ]) {
+    requireString(profile, key, "benchmark reference profile");
+  }
+  for (const key of ["policyBundleSha256", "skillPackSha256"]) {
+    if (
+      !/^[a-f0-9]{64}$/u.test(
+        requireString(profile, key, "benchmark reference profile"),
+      )
+    ) {
+      throw new EvidenceValidationError(
+        "BenchmarkManifestInvalid",
+        `benchmark reference profile.${key} must be SHA-256`,
+      );
+    }
+  }
+  for (const key of [
+    "maximumSteps",
+    "maximumWallClockMs",
+    "maximumModelTokens",
+  ]) {
+    requirePositiveInteger(profile, key, "benchmark reference profile");
+  }
   const repetitions = requirePositiveInteger(
     profile,
     "repetitions",
     "benchmark reference profile",
   );
+  const fixtureVersions = asRecord(
+    profile["fixtureVersions"],
+    "benchmark reference profile.fixtureVersions",
+  );
+  if (
+    Object.keys(fixtureVersions).length === 0 ||
+    Object.values(fixtureVersions).some(
+      (fixtureVersion) =>
+        typeof fixtureVersion !== "string" || fixtureVersion.trim() === "",
+    )
+  ) {
+    throw new EvidenceValidationError(
+      "BenchmarkManifestInvalid",
+      "benchmark reference profile must bind fixture versions",
+    );
+  }
 
   const scenarios = requireArray(manifest, "scenarios", "benchmark manifest");
   if (scenarios.length === 0) {
@@ -1745,9 +1832,25 @@ function validateBenchmarkEvidence(
     );
   }
   const scenarioIds = new Set<string>();
+  const scenarioModes = new Map<string, "normal" | "fault">();
+  const expectedDefectsByScenario = new Map<string, ReadonlySet<string>>();
   for (const [index, value] of scenarios.entries()) {
+    const scenario = asRecord(value, `benchmark scenario ${index}`);
+    assertKeys(
+      scenario,
+      [
+        "scenarioId",
+        "fixtureId",
+        "fixtureVersion",
+        "mode",
+        "missionRef",
+        "groundTruthRef",
+        "expectedDefectIds",
+      ],
+      `benchmark scenario ${index}`,
+    );
     const scenarioId = requireString(
-      asRecord(value, `benchmark scenario ${index}`),
+      scenario,
       "scenarioId",
       `benchmark scenario ${index}`,
     );
@@ -1758,13 +1861,162 @@ function validateBenchmarkEvidence(
       );
     }
     scenarioIds.add(scenarioId);
+    const fixtureId = requireString(
+      scenario,
+      "fixtureId",
+      `benchmark scenario ${index}`,
+    );
+    if (
+      scenario["fixtureVersion"] !== fixtureVersions[fixtureId] ||
+      (scenario["mode"] !== "normal" && scenario["mode"] !== "fault")
+    ) {
+      throw new EvidenceValidationError(
+        "BenchmarkManifestInvalid",
+        `benchmark scenario ${scenarioId} does not bind its frozen fixture or mode`,
+      );
+    }
+    requireString(scenario, "missionRef", `benchmark scenario ${index}`);
+    requireString(scenario, "groundTruthRef", `benchmark scenario ${index}`);
+    const expectedDefectIds = scenario["expectedDefectIds"];
+    if (
+      !Array.isArray(expectedDefectIds) ||
+      expectedDefectIds.some(
+        (defectId) => typeof defectId !== "string" || defectId.trim() === "",
+      ) ||
+      new Set(expectedDefectIds).size !== expectedDefectIds.length
+    ) {
+      throw new EvidenceValidationError(
+        "BenchmarkManifestInvalid",
+        `benchmark scenario ${scenarioId} has invalid expected defects`,
+      );
+    }
+    scenarioModes.set(scenarioId, scenario["mode"]);
+    expectedDefectsByScenario.set(
+      scenarioId,
+      new Set(expectedDefectIds as string[]),
+    );
+  }
+  const thresholds = asRecord(manifest["thresholds"], "benchmark thresholds");
+  const frozenThresholds = {
+    p0RecallMinimum: 1,
+    knownBugRecallMinimum: 0.8,
+    findingPrecisionMinimum: 0.6,
+    stableReproductionRateMinimum: 0.7,
+    maximumHighConfidenceFalsePositivesPerNormalMission: 1,
+  };
+  if (
+    Object.keys(thresholds).length !== Object.keys(frozenThresholds).length ||
+    Object.entries(frozenThresholds).some(
+      ([key, threshold]) => thresholds[key] !== threshold,
+    )
+  ) {
+    throw new EvidenceValidationError(
+      "BenchmarkManifestInvalid",
+      "benchmark manifest does not carry the frozen v1 thresholds",
+    );
+  }
+
+  const groundTruth = asRecord(
+    evidence["groundTruth"],
+    "benchmark ground truth",
+  );
+  assertKeys(
+    groundTruth,
+    ["benchmarkVersion", "defects"],
+    "benchmark ground truth",
+  );
+  if (groundTruth["benchmarkVersion"] !== benchmarkVersion) {
+    throw new EvidenceValidationError(
+      "BenchmarkGroundTruthInvalid",
+      "benchmark ground truth version does not match the manifest",
+    );
+  }
+  const defects = requireArray(
+    groundTruth,
+    "defects",
+    "benchmark ground truth",
+  );
+  const defectKeys = new Set<string>();
+  const truthDefectsByScenario = new Map<string, Set<string>>();
+  const parsedDefects: {
+    readonly scenarioId: string;
+    readonly defectId: string;
+    readonly severity: "P0" | "P1" | "P2";
+    readonly stable: boolean;
+  }[] = [];
+  for (const [index, value] of defects.entries()) {
+    const defect = asRecord(value, `benchmark defect ${index}`);
+    assertKeys(
+      defect,
+      ["scenarioId", "defectId", "severity", "stable"],
+      `benchmark defect ${index}`,
+    );
+    const scenarioId = requireString(
+      defect,
+      "scenarioId",
+      `benchmark defect ${index}`,
+    );
+    const defectId = requireString(
+      defect,
+      "defectId",
+      `benchmark defect ${index}`,
+    );
+    const severity = defect["severity"];
+    const key = `${scenarioId}\0${defectId}`;
+    if (
+      !scenarioIds.has(scenarioId) ||
+      (severity !== "P0" && severity !== "P1" && severity !== "P2") ||
+      typeof defect["stable"] !== "boolean" ||
+      defectKeys.has(key)
+    ) {
+      throw new EvidenceValidationError(
+        "BenchmarkGroundTruthInvalid",
+        `benchmark defect ${key} is invalid or duplicated`,
+      );
+    }
+    defectKeys.add(key);
+    const scenarioDefects =
+      truthDefectsByScenario.get(scenarioId) ?? new Set<string>();
+    scenarioDefects.add(defectId);
+    truthDefectsByScenario.set(scenarioId, scenarioDefects);
+    parsedDefects.push({
+      scenarioId,
+      defectId,
+      severity,
+      stable: defect["stable"],
+    });
+  }
+  for (const scenarioId of scenarioIds) {
+    const expected = expectedDefectsByScenario.get(scenarioId);
+    const actual = truthDefectsByScenario.get(scenarioId) ?? new Set<string>();
+    if (
+      expected === undefined ||
+      expected.size !== actual.size ||
+      [...expected].some((defectId) => !actual.has(defectId))
+    ) {
+      throw new EvidenceValidationError(
+        "BenchmarkGroundTruthInvalid",
+        `benchmark scenario ${scenarioId} does not exactly bind ground truth`,
+      );
+    }
   }
 
   const report = asRecord(evidence["report"], "benchmark report");
+  const manifestHash = sha256Hex(canonicalJson(manifest));
+  const profileHash = sha256Hex(canonicalJson(profile));
+  const groundTruthHash = sha256Hex(canonicalJson(groundTruth));
   if (
     report["benchmarkVersion"] !== benchmarkVersion ||
     report["profileStatus"] !== "reference" ||
-    report["profileSha256"] !== sha256Hex(canonicalJson(profile))
+    report["profileSha256"] !== profileHash ||
+    report["manifestSha256"] !== manifestHash ||
+    report["groundTruthSha256"] !== groundTruthHash ||
+    typeof report["inputSha256"] !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(report["inputSha256"]) ||
+    !Number.isFinite(
+      Date.parse(requireString(report, "createdAt", "benchmark report")),
+    ) ||
+    Date.parse(String(report["createdAt"])) > Date.parse(input.decidedAt)
   ) {
     throw new EvidenceValidationError(
       "BenchmarkReportInvalid",
@@ -1790,6 +2042,32 @@ function validateBenchmarkEvidence(
     report["attemptBindingSha256s"],
     "benchmark report.attemptBindingSha256s",
   );
+  const sortedAttemptIds = [...reportAttemptIds].sort();
+  const sortedBindingHashes = [...bindingHashes].sort();
+  const expectedReportId = sha256Hex(
+    canonicalJson({
+      manifestHash,
+      profileHash,
+      truthHash: groundTruthHash,
+      inputSha256: report["inputSha256"],
+      attemptIds: sortedAttemptIds,
+      attemptBindingSha256s: sortedBindingHashes,
+    }),
+  );
+  if (
+    report["reportId"] !== expectedReportId ||
+    reportAttemptIds.some(
+      (attemptId, index) => attemptId !== sortedAttemptIds[index],
+    ) ||
+    bindingHashes.some(
+      (bindingHash, index) => bindingHash !== sortedBindingHashes[index],
+    )
+  ) {
+    throw new EvidenceValidationError(
+      "BenchmarkReportInvalid",
+      "benchmark report identity or canonical ordering is invalid",
+    );
+  }
 
   const invocations = requireArray(
     evidence,
@@ -1833,19 +2111,61 @@ function validateBenchmarkEvidence(
   }
   const seenSlots = new Set<string>();
   const seenAttemptIds = new Set<string>();
+  const seenBindings = new Set<string>();
+  const parsedAttempts: {
+    readonly scenarioId: string;
+    readonly repetition: number;
+    readonly findings: readonly {
+      readonly defectId: string;
+      readonly confidence: "low" | "medium" | "high";
+    }[];
+  }[] = [];
   for (const [index, value] of attempts.entries()) {
     const label = `benchmark attempt ${index}`;
     const attempt = asRecord(value, label);
     const attemptId = requireString(attempt, "attemptId", label);
+    const bindingSha256 = requireString(attempt, "bindingSha256", label);
     const scenarioId = requireString(attempt, "scenarioId", label);
     const repetition = requirePositiveInteger(attempt, "repetition", label);
     const attemptInvocationIds = assertStringArray(
       attempt["invocationIds"],
       `${label}.invocationIds`,
     );
+    const findings = requireArray(attempt, "findings", label).map(
+      (
+        value,
+        findingIndex,
+      ): {
+        readonly defectId: string;
+        readonly confidence: "low" | "medium" | "high";
+      } => {
+        const finding = asRecord(value, `${label}.findings[${findingIndex}]`);
+        const defectId = requireString(
+          finding,
+          "defectId",
+          `${label}.findings[${findingIndex}]`,
+        );
+        const confidence = finding["confidence"];
+        if (
+          confidence !== "low" &&
+          confidence !== "medium" &&
+          confidence !== "high"
+        ) {
+          throw new EvidenceValidationError(
+            "BenchmarkAttemptInvalid",
+            `${label} has an invalid finding confidence`,
+          );
+        }
+        return { defectId, confidence };
+      },
+    );
     const slot = `${scenarioId}\u0000${repetition}`;
     if (
       !scenarioIds.has(scenarioId) ||
+      attempt["mode"] !== scenarioModes.get(scenarioId) ||
+      attempt["profileSha256"] !== profileHash ||
+      !bindingHashes.includes(bindingSha256) ||
+      seenBindings.has(bindingSha256) ||
       repetition > repetitions ||
       seenSlots.has(slot) ||
       seenAttemptIds.has(attemptId) ||
@@ -1862,6 +2182,106 @@ function validateBenchmarkEvidence(
     }
     seenSlots.add(slot);
     seenAttemptIds.add(attemptId);
+    seenBindings.add(bindingSha256);
+    parsedAttempts.push({ scenarioId, repetition, findings });
+  }
+
+  const attemptsByScenario = new Map<
+    string,
+    (typeof parsedAttempts)[number][]
+  >();
+  for (const attempt of parsedAttempts) {
+    const entries = attemptsByScenario.get(attempt.scenarioId) ?? [];
+    entries.push(attempt);
+    attemptsByScenario.set(attempt.scenarioId, entries);
+  }
+  const ratio = (numerator: number, denominator: number) => ({
+    numerator,
+    denominator,
+    value: denominator === 0 ? 1 : numerator / denominator,
+  });
+  const detectedDefects = new Set<string>();
+  let highConfidenceTotal = 0;
+  let highConfidenceTrue = 0;
+  for (const attempt of parsedAttempts) {
+    for (const finding of attempt.findings) {
+      const key = `${attempt.scenarioId}\0${finding.defectId}`;
+      detectedDefects.add(key);
+      if (finding.confidence === "high") {
+        highConfidenceTotal += 1;
+        if (defectKeys.has(key)) {
+          highConfidenceTrue += 1;
+        }
+      }
+    }
+  }
+  const p0Defects = parsedDefects.filter((defect) => defect.severity === "P0");
+  const p0Hits = p0Defects.filter((defect) =>
+    detectedDefects.has(`${defect.scenarioId}\0${defect.defectId}`),
+  ).length;
+  const knownHits = parsedDefects.filter((defect) =>
+    detectedDefects.has(`${defect.scenarioId}\0${defect.defectId}`),
+  ).length;
+  let stableSlots = 0;
+  let stableHits = 0;
+  for (const defect of parsedDefects.filter((entry) => entry.stable)) {
+    for (const attempt of attemptsByScenario.get(defect.scenarioId) ?? []) {
+      stableSlots += 1;
+      if (
+        attempt.findings.some((finding) => finding.defectId === defect.defectId)
+      ) {
+        stableHits += 1;
+      }
+    }
+  }
+  const falsePositivesByNormalMission: Record<string, number> = {};
+  for (const [scenarioId, mode] of scenarioModes) {
+    if (mode !== "normal") {
+      continue;
+    }
+    falsePositivesByNormalMission[scenarioId] = (
+      attemptsByScenario.get(scenarioId) ?? []
+    ).reduce(
+      (count, attempt) =>
+        count +
+        attempt.findings.filter(
+          (finding) =>
+            finding.confidence === "high" &&
+            !defectKeys.has(`${scenarioId}\0${finding.defectId}`),
+        ).length,
+      0,
+    );
+  }
+  const computedMetrics = {
+    p0Recall:
+      p0Defects.length === 0
+        ? { numerator: 0, denominator: 0, value: 0 }
+        : ratio(p0Hits, p0Defects.length),
+    knownBugRecall: ratio(knownHits, parsedDefects.length),
+    findingPrecision: ratio(highConfidenceTrue, highConfidenceTotal),
+    stableReproductionRate: ratio(stableHits, stableSlots),
+    highConfidenceFalsePositivesByNormalMission: falsePositivesByNormalMission,
+  };
+  if (
+    canonicalJson(report["metrics"]) !== canonicalJson(computedMetrics) ||
+    computedMetrics.p0Recall.denominator === 0 ||
+    computedMetrics.p0Recall.value < frozenThresholds.p0RecallMinimum ||
+    computedMetrics.knownBugRecall.value <
+      frozenThresholds.knownBugRecallMinimum ||
+    computedMetrics.findingPrecision.value <
+      frozenThresholds.findingPrecisionMinimum ||
+    computedMetrics.stableReproductionRate.value <
+      frozenThresholds.stableReproductionRateMinimum ||
+    Object.values(falsePositivesByNormalMission).some(
+      (count) =>
+        count >
+        frozenThresholds.maximumHighConfidenceFalsePositivesPerNormalMission,
+    )
+  ) {
+    throw new EvidenceValidationError(
+      "BenchmarkGateFailed",
+      "benchmark metrics do not match attempts or frozen thresholds",
+    );
   }
 }
 

@@ -12,7 +12,7 @@
   },
   "provider": {
     "id": "openai-compatible",
-    "model": "qualigence-reference-model"
+    "model": "qualigence-reference-detector-1"
   },
   "result": {
     "status": "succeeded",

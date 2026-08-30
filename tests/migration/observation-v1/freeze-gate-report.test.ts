@@ -585,16 +585,14 @@ async function writeReleaseFixture(
 
 afterEach(async () => {
   await Promise.all(
-    fixtureRoots
-      .splice(0)
-      .map((root) =>
-        rm(root, {
-          recursive: true,
-          force: true,
-          maxRetries: 5,
-          retryDelay: 50,
-        }),
-      ),
+    fixtureRoots.splice(0).map((root) =>
+      rm(root, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 50,
+      }),
+    ),
   );
 });
 
@@ -912,6 +910,42 @@ describe("finalizeGraphFreezeFromEvidence", () => {
     );
   });
 
+  it("accepts truthful superseded-ticket history bound to its replacement authority", async () => {
+    const repositoryRoot = await mkdtemp(
+      join(tmpdir(), "qualigence-freeze-github-superseded-"),
+    );
+    fixtureRoots.push(repositoryRoot);
+    const githubClosure = githubClosureFixture();
+    const ticket31 = mutableRecord(
+      githubClosure.tickets[30],
+      "legacy Ticket 31",
+    );
+    const issue31 = mutableRecord(ticket31["issue"], "legacy Ticket 31 issue");
+    issue31["status"] = "superseded";
+    issue31["todoTotal"] = 10;
+    issue31["todoCompleted"] = 0;
+    issue31["supersededBy"] = 48;
+    delete ticket31["pullRequest"];
+    const reference = await writeEvidenceObject(
+      repositoryRoot,
+      "v0.1.0-candidate",
+      "github-closure.json",
+      githubClosure,
+    );
+
+    const result = await finalizeGraphFreezeFromEvidence(
+      finalizerInput(repositoryRoot, {
+        evidence: { githubClosure: reference },
+      }),
+    );
+
+    expect(
+      result.decision.capabilities.find(
+        (capability) => capability.id === "github-closure",
+      ),
+    ).toMatchObject({ status: "verified", blockers: [] });
+  });
+
   it("validates real-provider and complete Reference Model benchmark evidence", async () => {
     const repositoryRoot = await mkdtemp(
       join(tmpdir(), "qualigence-freeze-model-"),
@@ -1155,6 +1189,21 @@ describe("finalizeGraphFreezeFromEvidence", () => {
       },
     },
     {
+      name: "unsupported migrator version prefix",
+      key: "candidateMigration",
+      filename: "candidate-migration.json",
+      code: "MigrationInventoryMismatch",
+      mutate: (evidence: Record<string, unknown>) => {
+        const report = mutableRecord(evidence["report"], "migration report");
+        const results = report["results"];
+        if (!Array.isArray(results) || results[0] === undefined) {
+          throw new Error("migration fixture has no result");
+        }
+        mutableRecord(results[0], "migration result")["migratorVersion"] =
+          "observation-migrator/v10";
+      },
+    },
+    {
       name: "unsupported Graph schema major",
       key: "graphConformance",
       filename: "graph-conformance.json",
@@ -1199,6 +1248,21 @@ describe("finalizeGraphFreezeFromEvidence", () => {
       mutate: (evidence: Record<string, unknown>) => {
         const report = mutableRecord(evidence["report"], "benchmark report");
         mutableRecord(report["gate"], "benchmark gate")["status"] = "failed";
+      },
+    },
+    {
+      name: "modified benchmark threshold",
+      key: "benchmark",
+      filename: "benchmark.json",
+      code: "BenchmarkManifestInvalid",
+      mutate: (evidence: Record<string, unknown>) => {
+        const manifest = mutableRecord(
+          evidence["manifest"],
+          "benchmark manifest",
+        );
+        mutableRecord(manifest["thresholds"], "benchmark thresholds")[
+          "knownBugRecallMinimum"
+        ] = 0.1;
       },
     },
   ])("fails closed for $name", async ({ key, filename, code, mutate }) => {
@@ -1471,6 +1535,23 @@ describe("finalizeGraphFreezeFromEvidence", () => {
           "graph-freeze-decision.json",
         ),
       ),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects dot-segment release versions before resolving an output path", async () => {
+    const repositoryRoot = await mkdtemp(
+      join(tmpdir(), "qualigence-freeze-invalid-version-"),
+    );
+    fixtureRoots.push(repositoryRoot);
+
+    await expect(
+      finalizeGraphFreezeFromEvidence({
+        ...finalizerInput(repositoryRoot),
+        version: "..",
+      }),
+    ).rejects.toMatchObject({ code: "FinalizerInputInvalid" });
+    await expect(
+      readFile(join(repositoryRoot, "artifacts", "graph-freeze-decision.json")),
     ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
