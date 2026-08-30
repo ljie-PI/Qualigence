@@ -12,7 +12,7 @@ Context documents define stable terms, ownership, seams, invariants, entrypoints
 - Read system-wide and context-scoped ADRs that affect the area. If no ADR directory exists, proceed silently; create ADRs lazily only when a resolved decision warrants one.
 - If a domain-documentation category does not exist, proceed silently rather than proposing it up front; `/domain-modeling` creates documentation lazily when a genuine gap is resolved.
 - Read the architecture, related contexts, tracked tickets, ADRs, and public contracts referenced by the selected contexts when work affects a public contract, persistence, security, deployment, or stable ownership.
-- Read `.scratch/remaining-production-closure/spec.md` and the complete selected ticket before editing closure work.
+- Read production-closure umbrella Issue [#67](https://github.com/ljie-PI/Qualigence/issues/67) and the complete selected sub-issue before editing closure work.
 - Treat merged GitHub PR/check evidence and serialized Gate artifacts as completion evidence; prose alone is not proof that production wiring exists.
 - Use the glossary's exact domain vocabulary in issue titles, specifications, tests, hypotheses, and code. Avoid synonyms that blur established concepts.
 - If a required concept is absent from the glossary, first check whether the proposed term conflicts with existing language; record a genuine gap through `/domain-modeling`.

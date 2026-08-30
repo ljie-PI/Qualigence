@@ -39,7 +39,7 @@
 
 - Architecture: `docs/architecture/2026-07-21-qualigence-open-source-architecture-design.md` sections 2, 5.3, 5.7, 5.11, 6.1, 9.1, and 11.
 - Related contexts: `docs/contexts/product/CONTEXT.md`, `docs/contexts/storage/CONTEXT.md`, and `docs/contexts/deployment/CONTEXT.md`.
-- Tracked work: `.scratch/remaining-production-closure/issues/07-durable-intelligence-leases-results.md`, `.scratch/remaining-production-closure/issues/08-production-intelligence-consumer.md`, and `.scratch/remaining-production-closure/issues/12-real-self-hosted-compose-runner-loop.md`.
+- Tracked work: legacy Tickets 07 ([#141](https://github.com/ljie-PI/Qualigence/issues/141)), 08 ([#135](https://github.com/ljie-PI/Qualigence/issues/135)), and 12 ([#142](https://github.com/ljie-PI/Qualigence/issues/142)).
 
 ## Verification
 

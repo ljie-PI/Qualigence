@@ -43,7 +43,7 @@
 
 - Architecture: `docs/architecture/2026-07-21-qualigence-open-source-architecture-design.md` sections 3, 10, 11, and 13.
 - Related contexts: `docs/contexts/product/CONTEXT.md`, `docs/contexts/intelligence/CONTEXT.md`, `docs/contexts/evidence/CONTEXT.md`, and `docs/contexts/storage/CONTEXT.md`.
-- Tracked work: `.scratch/remaining-production-closure/issues/12-real-self-hosted-compose-runner-loop.md`, `.scratch/remaining-production-closure/issues/14-oidc-jwks-metrics-readiness.md`, `.scratch/remaining-production-closure/issues/15-ls11-backup-restore-acceptance.md`, `.scratch/remaining-production-closure/issues/33-browser-e2e-mandatory-ci.md`, `.scratch/remaining-production-closure/issues/34-release-sbom-provenance-manifest.md`, and `.scratch/remaining-production-closure/issues/35-reconcile-status-decide-graph-freeze.md`.
+- Tracked work: legacy Tickets 12 ([#142](https://github.com/ljie-PI/Qualigence/issues/142)), 14 ([#147](https://github.com/ljie-PI/Qualigence/issues/147)), 15 ([#155](https://github.com/ljie-PI/Qualigence/issues/155)), 33 ([#166](https://github.com/ljie-PI/Qualigence/issues/166)), 34 ([#169](https://github.com/ljie-PI/Qualigence/issues/169)), and 35 ([#165](https://github.com/ljie-PI/Qualigence/issues/165)); integrated human and release acceptance is Ticket 48 ([#181](https://github.com/ljie-PI/Qualigence/issues/181)).
 
 ## Verification
 

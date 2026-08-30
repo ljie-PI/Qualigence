@@ -5,8 +5,8 @@ AI-native Software Quality Intelligence
 
 - Open-source architecture: `docs/architecture/2026-07-21-qualigence-open-source-architecture-design.md`
 - Context map: `CONTEXT-MAP.md`
-- Current production-closure spec: `.scratch/remaining-production-closure/spec.md`
-- Current production-closure tickets: `.scratch/remaining-production-closure/issues/`
+- Current production-closure spec: GitHub umbrella Issue [#67](https://github.com/ljie-PI/Qualigence/issues/67)
+- Current production-closure tickets: the native sub-issues of [#67](https://github.com/ljie-PI/Qualigence/issues/67)
 - Graph and Windows acceptance: `docs/testing/`
 
 The tracked tickets cover Community Local and Team Self-hosted through the Windows-first M3 closure. Merged GitHub pull requests/checks and serialized Gate artifacts are the evidence history; deferred advanced hardening is tracked as GitHub Issues.
@@ -105,7 +105,7 @@ A valid release manifest binds exactly one repository commit to:
 - provenance/attestation identifiers for the pushed images;
 - the mandatory same-commit Gate artifacts `gate-linux`, `gate-windows-rust`,
   `gate-self-hosted`, and `browser-e2e`;
-- the signed Ticket 31 Windows native acceptance evidence path and SHA-256.
+- the signed integrated Ticket 48 Windows native acceptance evidence path and SHA-256.
 
 Verify a generated manifest and render digest-only Compose with:
 
@@ -125,8 +125,8 @@ named artifact by immutable artifact ID and recomputes its SHA-256.
 The release verifier rejects mutable tags, non-`sha256:` image references,
 wrong repository/commit, duplicate or missing Gate names, cross-commit Gate
 artifacts, mismatched SBOM or Windows-evidence hashes, and unsigned Windows
-evidence. Ticket 31 and Ticket 46 evidence are phase-2 release dependencies;
-missing human/provider evidence is a blocked release, never a synthetic pass.
+evidence. Integrated Ticket 48 owns all human, provider, publication, and final
+freeze evidence; missing evidence is a blocked release, never a synthetic pass.
 
 ### Live Smoke（显式 opt-in，不在普通 Gate）
 

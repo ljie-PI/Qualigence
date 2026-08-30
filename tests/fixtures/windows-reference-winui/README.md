@@ -34,7 +34,7 @@ production Companion daemon, captures it through real UIA, drives supported
 actions, and writes machine-readable evidence.
 
 See the `manualWindowsVerification` block in `reference-app.fixture.json` and
-`docs/testing/windows-m3-manual-checklist.md` for the remaining Ticket 31
+`docs/testing/windows-m3-manual-checklist.md` for the remaining Ticket 48
 operator signoff. The signed result of that manual run is the
 `WindowsChecklistEvidence` record that `decideGraphFreeze` requires before
 Observation Graph v1 may move from `candidate` to `frozen`. The Ticket 47 harness

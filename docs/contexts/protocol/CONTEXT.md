@@ -41,7 +41,7 @@
 
 - Architecture: `docs/architecture/2026-07-21-qualigence-open-source-architecture-design.md` sections 7 and 10.
 - Related contexts: `docs/contexts/execution/CONTEXT.md`, `docs/contexts/evidence/CONTEXT.md`, `docs/contexts/storage/CONTEXT.md`, and `docs/contexts/windows/CONTEXT.md`.
-- Tracked work: `.scratch/remaining-production-closure/issues/05-dispatch-mission-bound-runner.md`, `.scratch/remaining-production-closure/issues/09-tenant-runner-application-resolver.md`, `.scratch/remaining-production-closure/issues/11-resumable-artifact-upload.md`, `.scratch/remaining-production-closure/issues/23-migrate-live-web-producers-v1.md`, `.scratch/remaining-production-closure/issues/26-desktop-target-protocol.md`, and `.scratch/remaining-production-closure/issues/27-typescript-companion-client.md`.
+- Tracked work: legacy Tickets 05 ([#139](https://github.com/ljie-PI/Qualigence/issues/139)), 09 ([#137](https://github.com/ljie-PI/Qualigence/issues/137)), 11 ([#134](https://github.com/ljie-PI/Qualigence/issues/134)), 23 ([#146](https://github.com/ljie-PI/Qualigence/issues/146)), 26 ([#159](https://github.com/ljie-PI/Qualigence/issues/159)), and 27 ([#160](https://github.com/ljie-PI/Qualigence/issues/160)).
 
 ## Verification
 

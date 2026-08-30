@@ -52,6 +52,6 @@ Companion `uia.capture`, and executes value, selection, invoke, permit replay,
 permit mismatch, approval denial/timeout, Emergency Stop, malformed IPC,
 reset/shutdown, and unrelated same-name process survival checks through real IPC.
 
-It is not a substitute for Ticket 31. Ticket 31 still requires the signed
-local-console/RDP Windows checklist, Section 16 veto review, and two-person
-attestation before native release acceptance can be claimed.
+It is not a substitute for integrated Ticket 48. That ticket still requires the
+signed local-console/RDP Windows checklist, Section 16 veto review, and
+two-person attestation before native release acceptance can be claimed.

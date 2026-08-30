@@ -91,7 +91,7 @@ jobs:
           $env:RUSTUP_TOOLCHAIN = '1.96.1'
           $gitOpenSsl = 'C:\Program Files\Git\usr\bin\openssl.exe'
           if (Test-Path -LiteralPath $gitOpenSsl) { $env:PATH = "$(Split-Path -Parent $gitOpenSsl);$env:PATH" }
-          # Hosted phase-1 runs on GitHub windows-latest (Windows Server caption). Ticket 31 remains the Windows 11 local-console/RDP Gate.
+          # Hosted phase-1 runs on GitHub windows-latest (Windows Server caption). Integrated Ticket 48 owns the Windows 11 local-console/RDP Gate.
           # Fail closed only for a true non-Windows host; keep CargoUnavailable/OpenSslUnavailable. Local package.json gate:windows still requires windows11.
           node --experimental-strip-types tests/helpers/infrastructure-preflight.ts windows cargo rustfmt openssl 2>&1 | Tee-Object gate-windows-rust/preflight.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

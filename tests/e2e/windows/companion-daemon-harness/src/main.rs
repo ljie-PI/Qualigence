@@ -317,7 +317,7 @@ fn run_harness(args: Vec<String>) -> HarnessResult<PathBuf> {
         )?;
 
         ensure_not_timed_out(started_at)?;
-        checks.push(pass("ticket31-handoff", "Harness result is an automated prerequisite only; Ticket 31 remains responsible for signed local-console/RDP checklist evidence"));
+        checks.push(pass("ticket31-handoff", "Harness result is an automated prerequisite only; integrated Ticket 48 remains responsible for signed local-console/RDP checklist evidence"));
         let document = EvidenceDocument {
             schema_version: "qualigence-windows-uia-daemon-harness/v1",
             status: "passed",
@@ -2973,7 +2973,7 @@ fn summary_markdown(document: &EvidenceDocument, evidence_path: &Path) -> String
         ));
     }
     lines.push(String::new());
-    lines.push("Ticket 31 still owns local-console/RDP human checklist execution and two-person signatures.".to_string());
+    lines.push("Integrated Ticket 48 owns local-console/RDP human checklist execution and two-person signatures.".to_string());
     lines.push(String::new());
     lines.join("\n")
 }

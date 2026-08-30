@@ -39,7 +39,7 @@
 
 - Architecture: `docs/architecture/2026-07-21-qualigence-open-source-architecture-design.md` sections 5.6, 7.3, 8, 9, and 11.
 - Related contexts: `docs/contexts/protocol/CONTEXT.md`, `docs/contexts/storage/CONTEXT.md`, and `docs/contexts/deployment/CONTEXT.md`.
-- Tracked work: `.scratch/remaining-production-closure/issues/11-resumable-artifact-upload.md`, `.scratch/remaining-production-closure/issues/13-evidence-api-s3-kms.md`, and `.scratch/remaining-production-closure/issues/15-ls11-backup-restore-acceptance.md`.
+- Tracked work: legacy Tickets 11 ([#134](https://github.com/ljie-PI/Qualigence/issues/134)), 13 ([#157](https://github.com/ljie-PI/Qualigence/issues/157)), and 15 ([#155](https://github.com/ljie-PI/Qualigence/issues/155)).
 
 ## Verification
 
