@@ -1,12 +1,8 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
-  link,
-  lstat,
   mkdir,
   mkdtemp,
-  readFile,
-  realpath,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -25,6 +21,12 @@ import {
   OBSERVATION_FREEZE_REPORT_VERSION,
   type ObservationFreezeReportV1,
 } from "./freeze-report.js";
+import {
+  ConfinedPathAccessError,
+  nodeConfinedPathAccess,
+  setConfinedPathAccessInterlockForTests,
+  type ConfinedPathFileToken,
+} from "./confined-path-access.js";
 import { OBSERVATION_MIGRATOR_VERSION } from "./pre-v1-projector.js";
 import {
   GRAPH_FREEZE_DECISION_VERSION,
@@ -450,20 +452,72 @@ function assertBinding(
   }
 }
 
-async function assertNoSymlink(
+function evidencePathError(
+  id: string,
+  error: ConfinedPathAccessError,
+): EvidenceValidationError {
+  const code =
+    error.code === "PathSymlink"
+      ? "EvidencePathSymlink"
+      : error.code === "PathChanged"
+        ? "EvidencePathChanged"
+        : "EvidencePathInvalid";
+  return new EvidenceValidationError(
+    code,
+    `${id} path failed confined access: ${confinedErrorReason(error)}`,
+  );
+}
+
+async function assertConfinedEvidencePath(
   repositoryRoot: string,
   referencedPath: string,
+  label: string,
 ): Promise<void> {
-  let current = resolve(repositoryRoot);
-  for (const segment of referencedPath.split("/")) {
-    current = join(current, segment);
-    const info = await lstat(current);
-    if (info.isSymbolicLink()) {
-      throw new EvidenceValidationError(
-        "EvidencePathSymlink",
-        `${referencedPath} traverses a symbolic link`,
-      );
+  try {
+    await nodeConfinedPathAccess.assertExistingPath(repositoryRoot, referencedPath);
+  } catch (error) {
+    if (error instanceof ConfinedPathAccessError) {
+      throw evidencePathError(label, error);
     }
+    throw error;
+  }
+}
+
+async function readConfinedEvidenceFile(
+  repositoryRoot: string,
+  referencedPath: string,
+  label: string,
+): Promise<Buffer> {
+  try {
+    return await nodeConfinedPathAccess.readFile(repositoryRoot, referencedPath);
+  } catch (error) {
+    if (error instanceof ConfinedPathAccessError) {
+      throw evidencePathError(label, error);
+    }
+    throw error;
+  }
+}
+
+function decisionPathError(
+  path: string,
+  error: ConfinedPathAccessError,
+): GraphFreezeFinalizationError {
+  return new GraphFreezeFinalizationError(
+    "DecisionArtifactWriteFailed",
+    `${path} failed confined access: ${confinedErrorReason(error)}`,
+  );
+}
+
+function confinedErrorReason(error: ConfinedPathAccessError): string {
+  switch (error.code) {
+    case "PathChanged":
+      return "path changed during confined access";
+    case "PathInvalid":
+      return "path is invalid or escaped confinement";
+    case "PathNotDirectory":
+      return "path component is not a directory";
+    case "PathSymlink":
+      return "path includes symbolic-link or junction component";
   }
 }
 
@@ -514,22 +568,7 @@ async function readEvidenceBytes(
       `${id} resolves outside the repository root`,
     );
   }
-  await assertNoSymlink(root, reference.path);
-  const canonicalRoot = await realpath(root);
-  const canonical = await realpath(path);
-  const canonicalRelative = relative(canonicalRoot, canonical);
-  if (
-    canonicalRelative === "" ||
-    canonicalRelative === ".." ||
-    canonicalRelative.startsWith(`..${sep}`) ||
-    isAbsolute(canonicalRelative)
-  ) {
-    throw new EvidenceValidationError(
-      "EvidencePathInvalid",
-      `${id} canonical path escapes the repository root`,
-    );
-  }
-  const bytes = await readFile(path);
+  const bytes = await readConfinedEvidenceFile(root, reference.path, id);
   const actualHash = createHash("sha256").update(bytes).digest("hex");
   if (actualHash !== reference.sha256) {
     throw new EvidenceValidationError(
@@ -3934,21 +3973,7 @@ async function assertManifestPathConfined(
       `${label} escapes the repository root`,
     );
   }
-  await assertNoSymlink(root, reference.path);
-  const canonicalRoot = await realpath(root);
-  const canonicalPath = await realpath(path);
-  const canonicalRelative = relative(canonicalRoot, canonicalPath);
-  if (
-    canonicalRelative === "" ||
-    canonicalRelative === ".." ||
-    canonicalRelative.startsWith(`..${sep}`) ||
-    isAbsolute(canonicalRelative)
-  ) {
-    throw new EvidenceValidationError(
-      "EvidencePathInvalid",
-      `${label} canonically escapes the repository root`,
-    );
-  }
+  await assertConfinedEvidencePath(root, reference.path, label);
 }
 
 async function readManifestEvidenceBytes(
@@ -3958,8 +3983,11 @@ async function readManifestEvidenceBytes(
   acceptedPrefixes: readonly string[],
 ): Promise<Buffer> {
   await assertManifestPathConfined(input, reference, label, acceptedPrefixes);
-  const path = resolve(input.repositoryRoot, ...reference.path.split("/"));
-  const bytes = await readFile(path);
+  const bytes = await readConfinedEvidenceFile(
+    input.repositoryRoot,
+    reference.path,
+    label,
+  );
   const actualHash = createHash("sha256").update(bytes).digest("hex");
   if (actualHash !== reference.sha256) {
     throw new EvidenceValidationError(
@@ -5024,6 +5052,8 @@ type DecisionTemporaryRemover = (temporaryPath: string) => Promise<void>;
 
 let decisionTemporaryRemoverForTests: DecisionTemporaryRemover | undefined;
 
+export { setConfinedPathAccessInterlockForTests };
+
 export function setDecisionTemporaryRemoverForTests(
   remover: DecisionTemporaryRemover,
 ): () => void {
@@ -5051,25 +5081,48 @@ async function publishDecision(
   bytes: string,
   signal: AbortSignal | undefined,
 ): Promise<void> {
-  const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
+  const decisionRelativePath = decisionPathRelativeToRoot(repositoryRoot, path);
+  const temporaryRelativePath = `${decisionRelativePath}.tmp-${process.pid}-${randomUUID()}`;
+  const temporary = resolve(repositoryRoot, ...temporaryRelativePath.split("/"));
+  let temporaryToken: ConfinedPathFileToken | undefined;
   let primaryError: GraphFreezeFinalizationError | undefined;
   try {
-    await assertDecisionOutputPath(repositoryRoot, path);
-    if (await reconcileExistingDecision(repositoryRoot, path, bytes)) {
+    await assertDecisionOutputPath(repositoryRoot, decisionRelativePath, path);
+    if (
+      await reconcileExistingDecision(
+        repositoryRoot,
+        decisionRelativePath,
+        path,
+        bytes,
+      )
+    ) {
       return;
     }
-    await mkdir(dirname(path), { recursive: true });
-    await assertDecisionOutputPath(repositoryRoot, path);
-    await writeFile(temporary, bytes, { encoding: "utf8", flag: "wx" });
+    await ensureDecisionDirectory(repositoryRoot, directoryOfSlashPath(decisionRelativePath), path);
+    await assertDecisionOutputPath(repositoryRoot, decisionRelativePath, path);
+    temporaryToken = await writeNewDecisionFile(
+      repositoryRoot,
+      temporaryRelativePath,
+      temporary,
+      bytes,
+    );
     abortIfRequested(signal);
-    await assertDecisionOutputPath(repositoryRoot, path);
+    await assertDecisionOutputPath(repositoryRoot, decisionRelativePath, path);
     abortIfRequested(signal);
     try {
-      await link(temporary, path);
+      await linkDecisionFile(
+        repositoryRoot,
+        temporaryToken,
+        decisionRelativePath,
+        path,
+      );
     } catch (error) {
+      if (error instanceof GraphFreezeFinalizationError || !hasCode(error, "EEXIST")) {
+        throw error;
+      }
       try {
-        await assertDecisionOutputPath(repositoryRoot, path);
-        const existing = await readFile(path, "utf8");
+        await assertDecisionOutputPath(repositoryRoot, decisionRelativePath, path);
+        const existing = await readDecisionFile(repositoryRoot, decisionRelativePath, path);
         if (existing === bytes) {
           return;
         }
@@ -5091,8 +5144,8 @@ async function publishDecision(
       }
       throw error;
     }
-    await assertDecisionOutputPath(repositoryRoot, path);
-    const published = await readFile(path, "utf8");
+    await assertDecisionOutputPath(repositoryRoot, decisionRelativePath, path);
+    const published = await readDecisionFile(repositoryRoot, decisionRelativePath, path);
     if (published !== bytes) {
       throw new GraphFreezeFinalizationError(
         "DecisionArtifactConflict",
@@ -5112,9 +5165,19 @@ async function publishDecision(
     try {
       const remover = decisionTemporaryRemoverForTests;
       if (remover === undefined) {
-        await rm(temporary, { force: true });
+        if (temporaryToken === undefined) {
+          await assertDecisionOutputPath(
+            repositoryRoot,
+            temporaryRelativePath,
+            temporary,
+          );
+          await rm(temporary, { force: true });
+        } else {
+          await removeDecisionFile(repositoryRoot, temporaryToken, temporary);
+        }
       } else {
         await remover(temporary);
+        await temporaryToken?.close?.();
       }
     } catch (cleanupError) {
       if (primaryError !== undefined) {
@@ -5128,8 +5191,8 @@ async function publishDecision(
         );
       }
       try {
-        await assertDecisionOutputPath(repositoryRoot, path);
-        const published = await readFile(path, "utf8");
+        await assertDecisionOutputPath(repositoryRoot, decisionRelativePath, path);
+        const published = await readDecisionFile(repositoryRoot, decisionRelativePath, path);
         if (published !== bytes) {
           throw cleanupError;
         }
@@ -5145,12 +5208,13 @@ async function publishDecision(
 
 async function reconcileExistingDecision(
   repositoryRoot: string,
-  path: string,
+  relativePath: string,
+  displayPath: string,
   bytes: string,
 ): Promise<boolean> {
   try {
-    await assertDecisionOutputPath(repositoryRoot, path);
-    const existing = await readFile(path, "utf8");
+    await assertDecisionOutputPath(repositoryRoot, relativePath, displayPath);
+    const existing = await readDecisionFile(repositoryRoot, relativePath, displayPath);
     if (existing === bytes) {
       return true;
     }
@@ -5158,7 +5222,7 @@ async function reconcileExistingDecision(
     const expectedHash = createHash("sha256").update(bytes).digest("hex");
     throw new GraphFreezeFinalizationError(
       "DecisionArtifactConflict",
-      `${path} contains ${existingHash}, not recomputed ${expectedHash}`,
+      `${displayPath} contains ${existingHash}, not recomputed ${expectedHash}`,
     );
   } catch (error) {
     if (error instanceof GraphFreezeFinalizationError) {
@@ -5173,12 +5237,119 @@ async function reconcileExistingDecision(
 
 async function assertDecisionOutputPath(
   repositoryRoot: string,
-  path: string,
+  relativePath: string,
+  displayPath: string,
 ): Promise<void> {
+  try {
+    await nodeConfinedPathAccess.assertExistingPath(repositoryRoot, relativePath);
+  } catch (error) {
+    if (error instanceof ConfinedPathAccessError) {
+      if (error.code === "PathInvalid") {
+        throw new GraphFreezeFinalizationError(
+          "DecisionArtifactWriteFailed",
+          `${displayPath} is outside repository root ${repositoryRoot}`,
+        );
+      }
+      throw decisionPathError(displayPath, error);
+    }
+    if (hasCode(error, "ENOENT")) {
+      return;
+    }
+    throw error;
+  }
+}
+
+async function ensureDecisionDirectory(
+  repositoryRoot: string,
+  relativePath: string,
+  displayPath: string,
+): Promise<void> {
+  try {
+    await nodeConfinedPathAccess.ensureDirectory(repositoryRoot, relativePath);
+  } catch (error) {
+    if (error instanceof ConfinedPathAccessError) {
+      throw decisionPathError(displayPath, error);
+    }
+    throw error;
+  }
+}
+
+async function writeNewDecisionFile(
+  repositoryRoot: string,
+  relativePath: string,
+  displayPath: string,
+  bytes: string,
+): Promise<ConfinedPathFileToken> {
+  try {
+    return await nodeConfinedPathAccess.writeNewFile(
+      repositoryRoot,
+      relativePath,
+      bytes,
+    );
+  } catch (error) {
+    if (error instanceof ConfinedPathAccessError) {
+      throw decisionPathError(displayPath, error);
+    }
+    throw error;
+  }
+}
+
+async function removeDecisionFile(
+  repositoryRoot: string,
+  token: ConfinedPathFileToken,
+  displayPath: string,
+): Promise<void> {
+  try {
+    await nodeConfinedPathAccess.removeFile(repositoryRoot, token);
+  } catch (error) {
+    if (error instanceof ConfinedPathAccessError) {
+      throw decisionPathError(displayPath, error);
+    }
+    throw error;
+  }
+}
+
+async function linkDecisionFile(
+  repositoryRoot: string,
+  temporaryToken: ConfinedPathFileToken,
+  decisionRelativePath: string,
+  displayPath: string,
+): Promise<void> {
+  try {
+    await nodeConfinedPathAccess.linkFile(
+      repositoryRoot,
+      temporaryToken,
+      decisionRelativePath,
+    );
+  } catch (error) {
+    if (error instanceof ConfinedPathAccessError) {
+      throw decisionPathError(displayPath, error);
+    }
+    throw error;
+  }
+}
+
+async function readDecisionFile(
+  repositoryRoot: string,
+  relativePath: string,
+  displayPath: string,
+): Promise<string> {
+  try {
+    return (await nodeConfinedPathAccess.readFile(repositoryRoot, relativePath)).toString("utf8");
+  } catch (error) {
+    if (error instanceof ConfinedPathAccessError) {
+      throw decisionPathError(displayPath, error);
+    }
+    throw error;
+  }
+}
+
+function decisionPathRelativeToRoot(repositoryRoot: string, path: string): string {
   const absoluteRoot = resolve(repositoryRoot);
   const absolutePath = resolve(path);
   const lexicalRelative = relative(absoluteRoot, absolutePath);
   if (
+    lexicalRelative === "" ||
     lexicalRelative === ".." ||
     lexicalRelative.startsWith(`..${sep}`) ||
     isAbsolute(lexicalRelative)
@@ -5188,46 +5359,12 @@ async function assertDecisionOutputPath(
       `${path} is outside repository root ${repositoryRoot}`,
     );
   }
+  return lexicalRelative.split(sep).join("/");
+}
 
-  const canonicalRoot = await realpath(absoluteRoot);
-  let cursor = absoluteRoot;
-  const components = lexicalRelative.split(sep).filter((part) => part !== "");
-  for (const [index, component] of components.entries()) {
-    cursor = join(cursor, component);
-    let stats;
-    try {
-      stats = await lstat(cursor);
-    } catch (error) {
-      if (hasCode(error, "ENOENT")) {
-        return;
-      }
-      throw error;
-    }
-    if (stats.isSymbolicLink()) {
-      throw new GraphFreezeFinalizationError(
-        "DecisionArtifactWriteFailed",
-        `${cursor} is a symbolic-link or junction component`,
-      );
-    }
-    if (index < components.length - 1 && !stats.isDirectory()) {
-      throw new GraphFreezeFinalizationError(
-        "DecisionArtifactWriteFailed",
-        `${cursor} is not a directory`,
-      );
-    }
-    const canonicalCursor = await realpath(cursor);
-    const canonicalRelative = relative(canonicalRoot, canonicalCursor);
-    if (
-      canonicalRelative === ".." ||
-      canonicalRelative.startsWith(`..${sep}`) ||
-      isAbsolute(canonicalRelative)
-    ) {
-      throw new GraphFreezeFinalizationError(
-        "DecisionArtifactWriteFailed",
-        `${cursor} resolves outside repository root ${repositoryRoot}`,
-      );
-    }
-  }
+function directoryOfSlashPath(path: string): string {
+  const index = path.lastIndexOf("/");
+  return index === -1 ? "." : path.slice(0, index);
 }
 
 function hasCode(error: unknown, code: string): boolean {

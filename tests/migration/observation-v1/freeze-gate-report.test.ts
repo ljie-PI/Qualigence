@@ -5,6 +5,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  rename,
   rm,
   stat,
   symlink,
@@ -16,6 +17,7 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { canonicalJson, sha256Hex } from "@qualigence/skill";
 import {
+  setConfinedPathAccessInterlockForTests,
   setDecisionTemporaryRemoverForTests,
   setReleaseVerifierRunnerForTests,
   setReleaseVerifierSnapshotRemoverForTests,
@@ -3467,6 +3469,62 @@ describe("finalizeGraphFreezeFromEvidence", () => {
     );
   });
 
+  it("rejects evidence when its parent directory is swapped before the descriptor read", async () => {
+    const repositoryRoot = await mkdtemp(
+      join(tmpdir(), "qualigence-freeze-evidence-swap-"),
+    );
+    fixtureRoots.push(repositoryRoot);
+    const version = "v0.1.0-candidate";
+    const evidenceRoot = join(
+      repositoryRoot,
+      "artifacts",
+      "manual-acceptance",
+      version,
+    );
+    const movedEvidenceRoot = `${evidenceRoot}.moved`;
+    await mkdir(evidenceRoot, { recursive: true });
+    const bytes = await readFile(
+      join(FINALIZER_FIXTURE_ROOT, "candidate-migration.json"),
+    );
+    await writeFile(join(evidenceRoot, "candidate-migration.json"), bytes);
+    let swapped = false;
+    const restore = setConfinedPathAccessInterlockForTests(async (event) => {
+      if (
+        swapped ||
+        event.operation !== "read" ||
+        event.relativePath !==
+          "artifacts/manual-acceptance/v0.1.0-candidate/candidate-migration.json"
+      ) {
+        return;
+      }
+      swapped = true;
+      await rename(evidenceRoot, movedEvidenceRoot);
+      await mkdir(evidenceRoot, { recursive: true });
+      await writeFile(join(evidenceRoot, "candidate-migration.json"), bytes);
+    });
+
+    try {
+      const result = await finalizeGraphFreezeFromEvidence(
+        finalizerInput(repositoryRoot, {
+          evidence: {
+            candidateMigration: {
+              path: "artifacts/manual-acceptance/v0.1.0-candidate/candidate-migration.json",
+              sha256: sha256(bytes),
+            },
+          },
+        }),
+      );
+
+      expect(swapped).toBe(true);
+      expect(result.decision.status).toBe("candidate");
+      expect(result.decision.blockingReasons).toContain(
+        "EvidencePathChanged: candidate-migration",
+      );
+    } finally {
+      restore();
+    }
+  });
+
   it.each([
     ["release manifest schema", "ManifestSchemaVersionInvalid"],
     ["unsigned Windows checklist", "WindowsEvidenceUnsigned"],
@@ -3923,6 +3981,110 @@ describe("finalizeGraphFreezeFromEvidence", () => {
     ).rejects.toMatchObject({ code: "DecisionArtifactConflict" });
     expect(await readFile(first.path, "utf8")).toBe(originalBytes);
     expect(await readFile(orphanPath, "utf8")).toBe("not terminal evidence\n");
+  });
+
+  it("rejects a swapped terminal parent before writing a decision", async () => {
+    const repositoryRoot = await mkdtemp(
+      join(tmpdir(), "qualigence-freeze-output-swap-"),
+    );
+    fixtureRoots.push(repositoryRoot);
+    const releaseRoot = join(
+      repositoryRoot,
+      "artifacts",
+      "release",
+      "v0.1.0-candidate",
+    );
+    const movedReleaseRoot = `${releaseRoot}.moved`;
+    let swapped = false;
+    const restore = setConfinedPathAccessInterlockForTests(async (event) => {
+      if (
+        swapped ||
+        event.operation !== "write" ||
+        !event.relativePath.startsWith(
+          "artifacts/release/v0.1.0-candidate/graph-freeze-decision.json.tmp-",
+        )
+      ) {
+        return;
+      }
+      swapped = true;
+      await rename(releaseRoot, movedReleaseRoot);
+      await mkdir(releaseRoot, { recursive: true });
+    });
+
+    try {
+      await expect(
+        finalizeGraphFreezeFromEvidence(finalizerInput(repositoryRoot)),
+      ).rejects.toMatchObject({ code: "DecisionArtifactWriteFailed" });
+    } finally {
+      restore();
+    }
+
+    expect(swapped).toBe(true);
+    await expect(
+      readFile(join(releaseRoot, "graph-freeze-decision.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(
+      readFile(join(movedReleaseRoot, "graph-freeze-decision.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects a swapped terminal parent before hard-link publication", async () => {
+    const repositoryRoot = await mkdtemp(
+      join(tmpdir(), "qualigence-freeze-output-link-swap-"),
+    );
+    fixtureRoots.push(repositoryRoot);
+    const releaseRoot = join(
+      repositoryRoot,
+      "artifacts",
+      "release",
+      "v0.1.0-candidate",
+    );
+    const movedReleaseRoot = `${releaseRoot}.moved`;
+    let temporaryRelativePath = "";
+    let swapped = false;
+    const restore = setConfinedPathAccessInterlockForTests(async (event) => {
+      if (
+        event.operation === "write" &&
+        event.relativePath.startsWith(
+          "artifacts/release/v0.1.0-candidate/graph-freeze-decision.json.tmp-",
+        )
+      ) {
+        temporaryRelativePath = event.relativePath;
+        return;
+      }
+      if (swapped || event.operation !== "link") {
+        return;
+      }
+      swapped = true;
+      await rename(releaseRoot, movedReleaseRoot);
+      await mkdir(releaseRoot, { recursive: true });
+      await writeFile(
+        join(releaseRoot, temporaryRelativePath.split("/").at(-1)!),
+        "substituted\n",
+      );
+    });
+
+    try {
+      await expect(
+        finalizeGraphFreezeFromEvidence(finalizerInput(repositoryRoot)),
+      ).rejects.toMatchObject({ code: "DecisionArtifactWriteFailed" });
+    } finally {
+      restore();
+    }
+
+    expect(swapped).toBe(true);
+    expect(
+      await readFile(
+        join(releaseRoot, temporaryRelativePath.split("/").at(-1)!),
+        "utf8",
+      ),
+    ).toBe("substituted\n");
+    await expect(
+      readFile(join(releaseRoot, "graph-freeze-decision.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(
+      readFile(join(movedReleaseRoot, "graph-freeze-decision.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("rejects a symlinked terminal parent without writing outside the repository", async () => {
