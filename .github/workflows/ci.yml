@@ -51,6 +51,10 @@ jobs:
     steps:
       # v4.6.0, reviewed immutable action commit.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          # gate:fast includes freeze-finalizer release tests that read the
+          # pinned Ticket 34 verifier from an ancestor commit.
+          fetch-depth: 0
       # v6.1.0, reviewed immutable action commit.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
