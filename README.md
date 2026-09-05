@@ -149,6 +149,9 @@ Ticket 48 evidence deterministically produces a candidate decision without
 tests prove that code path without creating release evidence or claiming a real
 freeze.
 
+For the human-facing step-by-step release acceptance flow, see
+`docs/testing/human-release-acceptance-runbook.md`.
+
 ### Live Smoke（显式 opt-in，不在普通 Gate）
 
 `pnpm test:live` 默认全部跳过，只有同时满足以下条件才对真实远程 Provider 运行 fault Fixture：
